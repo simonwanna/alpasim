@@ -301,13 +301,16 @@ def save_gif(paths, destination, fps):
 
     iterator = previews()
     first = next(iterator)
+    partial = destination.with_name(destination.name + ".partial")
     first.save(
-        destination,
+        partial,
+        format="GIF",
         save_all=True,
         append_images=iterator,
         duration=round(1000 / fps),
         loop=0,
     )
+    partial.replace(destination)
 
 
 def require_closed_loop_activity(run):
@@ -420,9 +423,6 @@ def export_artifacts(
                 "ego_overlay_pixels": overlay_pixels["ego"],
             }
         )
-    save_gif(paths, output / "preview-slow.gif", fps)
-    for reference in references:
-        save_gif(overlay_paths[reference], output / overlay_gifs[reference], fps)
     (output / "predicted-plans.json").write_text(
         json.dumps(
             [
@@ -459,6 +459,7 @@ def export_artifacts(
             **dict(run.counts),
         },
         "closed_loop_activity_required": require_closed_loop,
+        "video_export_completed": False,
         "preview_fps": fps,
         "overlay_references": list(references),
         "ego_motion": ego_motion_summary(run.frames),
@@ -472,6 +473,16 @@ def export_artifacts(
         ),
         "frames": rows,
     }
+    (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print("Saved plans and frame summary; encoding GIFs...", flush=True)
+    for name, frame_paths in [
+        ("preview-slow.gif", paths),
+        *((overlay_gifs[r], overlay_paths[r]) for r in references),
+    ]:
+        print("Encoding:", name, flush=True)
+        save_gif(frame_paths, output / name, fps)
+        print("Completed:", name, flush=True)
+    summary["video_export_completed"] = True
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(
         json.dumps({k: v for k, v in summary.items() if k != "frames"}, indent=2),

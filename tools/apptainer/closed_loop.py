@@ -340,7 +340,7 @@ class Run:
                         "both",
                         "--require-closed-loop",
                     ),
-                    limit=120,
+                    limit=self.args.export_timeout,
                 ),
                 "export",
             )
@@ -368,6 +368,12 @@ def main():
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument(
+        "--export-timeout",
+        type=int,
+        default=600,
+        help="GIF export limit in seconds, within the overall timeout",
+    )
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument(
         "--approach-steps",
@@ -383,6 +389,8 @@ def main():
     args = parser.parse_args()
     if not 4 <= args.steps <= 180 or args.timeout <= 0:
         parser.error("Use 4..180 simulation steps and a positive timeout")
+    if args.export_timeout <= 0:
+        parser.error("Export timeout must be positive")
     if not 0 <= args.approach_steps <= args.steps - 3:
         parser.error("Approach must leave at least two policy-controlled intervals")
     if args.run:

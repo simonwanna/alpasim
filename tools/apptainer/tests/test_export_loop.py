@@ -186,6 +186,7 @@ def test_export_artifacts_preserves_warmup_and_plan_timestamps(tmp_path):
     out = tmp_path / "export"
     summary = export.export_artifacts(run, out)
     assert summary["generated_frames"] == 3
+    assert summary["video_export_completed"]
     assert summary["warmup_frames"] == 1
     assert summary["closed_loop_frames"] == 2
     assert [r["plan_decision_timestamp_us"] for r in summary["frames"]] == [
@@ -199,6 +200,37 @@ def test_export_artifacts_preserves_warmup_and_plan_timestamps(tmp_path):
     assert plans[0]["timestamps_us"] == [300, 400]
     with pytest.raises(FileExistsError):
         export.export_artifacts(run, out)
+
+
+def test_interrupted_gif_preserves_plans_without_publishing_partial_video(
+    tmp_path, monkeypatch
+):
+    import json
+
+    original_save = Image.Image.save
+
+    def interrupted_save(image, path, format=None, **kwargs):
+        if format == "GIF":
+            Path(path).write_bytes(b"GIF89a")
+            raise TimeoutError("encoding interrupted")
+        return original_save(image, path, format=format, **kwargs)
+
+    run = start()
+    run.add(chunk_request([100, 200, 300]))
+    run.add(chunk_return(3))
+    add_plan(run, 200, (300, 400))
+    monkeypatch.setattr(Image.Image, "save", interrupted_save)
+    out = tmp_path / "export"
+    with pytest.raises(TimeoutError, match="encoding interrupted"):
+        export.export_artifacts(run, out)
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["generated_frames"] == 3
+    assert not summary["video_export_completed"]
+    assert json.loads((out / "predicted-plans.json").read_text())[0][
+        "timestamps_us"
+    ] == [300, 400]
+    assert not (out / "preview-slow.gif").exists()
+    assert (out / "preview-slow.gif.partial").exists()
 
 
 def test_overlay_refuses_noisy_local_predictions(tmp_path):
