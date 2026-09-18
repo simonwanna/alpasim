@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 NVIDIA Corporation
 
+from __future__ import annotations
+
 import logging
 import math
 from abc import ABC, abstractmethod
-from typing import final
+from typing import TYPE_CHECKING, final
 
 import numpy as np
 from alpasim_runtime.config import RouteGeneratorType
 from alpasim_utils.geometry import Polyline, Pose
-from trajdata.maps import VectorMap
-from trajdata.maps.vec_map_elements import RoadLane
+
+if TYPE_CHECKING:
+    from trajdata.maps import VectorMap
+    from trajdata.maps.vec_map_elements import RoadLane
 
 logger = logging.getLogger(__name__)
 

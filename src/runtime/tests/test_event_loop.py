@@ -97,7 +97,6 @@ def test_initial_ego_context_uses_all_gt_samples_through_first_policy(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("alpasim_runtime.event_loop.RuntimeEvaluator", MagicMock())
     monkeypatch.setattr(
         "alpasim_runtime.event_loop.RouteGenerator.create",
         MagicMock(return_value=None),
@@ -127,7 +126,7 @@ def test_initial_ego_context_uses_all_gt_samples_through_first_policy(
         trafficsim=MagicMock(),
         controller=MagicMock(),
         camera_catalog=MagicMock(),
-        eval_config=MagicMock(),
+        eval_config=SimpleNamespace(enabled=False),
         eval_executor=MagicMock(),
     )
 

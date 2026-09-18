@@ -9,14 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import grpc
 import pytest
 from alpasim_grpc.v0 import common_pb2, runtime_pb2
 from alpasim_runtime.daemon.app import RuntimeDaemonApp
 from alpasim_runtime.daemon.servicer import RuntimeDaemonServicer
 from alpasim_runtime.errors import UnknownSceneError
 from alpasim_runtime.simulate.__main__ import _serve, create_arg_parser, run_simulation
-
-import grpc
 from eval.aggregation.failed_rollouts import FailedRollout
 
 
@@ -513,7 +512,7 @@ async def test_run_simulation_one_shot_uses_daemon_engine(
 
     generate_metrics_plot = Mock(return_value="/tmp/log/metrics_plot.png")
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.generate_metrics_plot",
+        "alpasim_runtime.telemetry.plot_metrics.generate_metrics_plot",
         generate_metrics_plot,
     )
     monkeypatch.setattr(
@@ -584,7 +583,7 @@ async def test_run_simulation_metrics_artifact_failure_is_best_effort(
         side_effect=RuntimeError("Prometheus query failed: bad result")
     )
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.generate_metrics_plot",
+        "alpasim_runtime.telemetry.plot_metrics.generate_metrics_plot",
         generate_metrics_plot,
     )
     monkeypatch.setattr(
@@ -593,7 +592,7 @@ async def test_run_simulation_metrics_artifact_failure_is_best_effort(
     )
     run_aggregation_from_runtime = Mock(return_value=True)
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.run_aggregation_from_runtime",
+        "eval.aggregation.main.run_aggregation_from_runtime",
         run_aggregation_from_runtime,
     )
 
@@ -647,7 +646,7 @@ async def test_run_simulation_does_not_aggregate_failed_rollouts_by_default(
         Mock(return_value=fake_engine),
     )
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.generate_metrics_plot",
+        "alpasim_runtime.telemetry.plot_metrics.generate_metrics_plot",
         Mock(return_value="/tmp/log/metrics_plot.png"),
     )
     monkeypatch.setattr(
@@ -656,7 +655,7 @@ async def test_run_simulation_does_not_aggregate_failed_rollouts_by_default(
     )
     run_aggregation_from_runtime = Mock(return_value=True)
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.run_aggregation_from_runtime",
+        "eval.aggregation.main.run_aggregation_from_runtime",
         run_aggregation_from_runtime,
     )
 
@@ -710,7 +709,7 @@ async def test_run_simulation_aggregates_failed_rollouts_when_enabled(
         Mock(return_value=fake_engine),
     )
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.generate_metrics_plot",
+        "alpasim_runtime.telemetry.plot_metrics.generate_metrics_plot",
         Mock(return_value="/tmp/log/metrics_plot.png"),
     )
     monkeypatch.setattr(
@@ -719,7 +718,7 @@ async def test_run_simulation_aggregates_failed_rollouts_when_enabled(
     )
     run_aggregation_from_runtime = Mock(return_value=True)
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.run_aggregation_from_runtime",
+        "eval.aggregation.main.run_aggregation_from_runtime",
         run_aggregation_from_runtime,
     )
 
@@ -781,7 +780,7 @@ async def test_run_simulation_one_shot_fails_when_result_count_mismatches_jobs(
 
     generate_metrics_plot = Mock()
     monkeypatch.setattr(
-        "alpasim_runtime.simulate.__main__.generate_metrics_plot",
+        "alpasim_runtime.telemetry.plot_metrics.generate_metrics_plot",
         generate_metrics_plot,
     )
     monkeypatch.setattr(

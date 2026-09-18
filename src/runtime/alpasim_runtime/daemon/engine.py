@@ -25,19 +25,7 @@ from alpasim_runtime.scene_loader import SceneLoader
 from alpasim_runtime.worker.ipc import JobResult, PendingRolloutJob
 from alpasim_runtime.worker.runtime import WorkerRuntime, start_worker_runtime
 
-from eval.data import AggregationType
-
 logger = logging.getLogger(__name__)
-
-_AGGREGATION_TYPE_TO_PROTO: dict[
-    AggregationType, runtime_pb2.TimeAggregation.ValueType
-] = {
-    AggregationType.MEAN: runtime_pb2.TIME_AGGREGATION_MEAN,
-    AggregationType.MEDIAN: runtime_pb2.TIME_AGGREGATION_MEDIAN,
-    AggregationType.MAX: runtime_pb2.TIME_AGGREGATION_MAX,
-    AggregationType.MIN: runtime_pb2.TIME_AGGREGATION_MIN,
-    AggregationType.LAST: runtime_pb2.TIME_AGGREGATION_LAST,
-}
 
 
 def _build_timestep_metrics(
@@ -46,13 +34,22 @@ def _build_timestep_metrics(
     """Convert eval timestep metrics to proto TimestepMetric messages."""
     if not result.eval_result:
         return []
+    from eval.data import AggregationType
+
+    aggregation_type_to_proto = {
+        AggregationType.MEAN: runtime_pb2.TIME_AGGREGATION_MEAN,
+        AggregationType.MEDIAN: runtime_pb2.TIME_AGGREGATION_MEDIAN,
+        AggregationType.MAX: runtime_pb2.TIME_AGGREGATION_MAX,
+        AggregationType.MIN: runtime_pb2.TIME_AGGREGATION_MIN,
+        AggregationType.LAST: runtime_pb2.TIME_AGGREGATION_LAST,
+    }
     return [
         runtime_pb2.SimulationReturn.TimestepMetric(
             name=m.name,
             timestamps_us=m.timestamps_us,
             values=[float(v) for v in m.values],
             valid=m.valid,
-            time_aggregation=_AGGREGATION_TYPE_TO_PROTO[m.time_aggregation],
+            time_aggregation=aggregation_type_to_proto[m.time_aggregation],
         )
         for m in result.eval_result.timestep_metrics
     ]

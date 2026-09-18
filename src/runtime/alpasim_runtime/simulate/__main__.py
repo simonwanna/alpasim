@@ -24,12 +24,9 @@ from alpasim_runtime.config import UserSimulatorConfig
 from alpasim_runtime.daemon.app import RuntimeDaemonApp
 from alpasim_runtime.daemon.engine import DaemonEngine
 from alpasim_runtime.runtime_context import parse_simulator_config
-from alpasim_runtime.telemetry.plot_metrics import generate_metrics_plot
 from alpasim_runtime.validation import validate_array_job_config
 from alpasim_utils.yaml_utils import typed_parse_config
-
 from eval.aggregation.failed_rollouts import FailedRollout
-from eval.aggregation.main import run_aggregation_from_runtime
 from eval.schema import EvalConfig
 
 logger = logging.getLogger(__name__)
@@ -78,6 +75,8 @@ def _generate_metrics_artifacts(
     """Generate best-effort runtime metrics artifacts from local Prometheus."""
     prometheus_dir = log_dir / "prometheus"
     try:
+        from alpasim_runtime.telemetry.plot_metrics import generate_metrics_plot
+
         generate_metrics_plot(
             prometheus_url=prometheus_url,
             output_path=log_dir / "metrics_plot.png",
@@ -269,6 +268,8 @@ async def run_simulation(args: argparse.Namespace) -> bool:
                 "Rollouts failed; running aggregation with %d failed rollout row(s)",
                 len(failed_rollouts),
             )
+        from eval.aggregation.main import run_aggregation_from_runtime
+
         logger.info("Running post-rollout aggregation...")
         # Determine array job directory: CLI arg > log_dir
         array_job_dir = args.array_job_dir or args.log_dir

@@ -15,6 +15,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 from alpasim_grpc.v0.logging_pb2 import LogEntry, RolloutMetadata
@@ -62,10 +63,11 @@ from alpasim_utils import geometry
 from alpasim_utils.logs import LogWriter
 from alpasim_utils.scenario import TrafficObjects
 from alpasim_utils.scene_data_source import SceneDataSource
-
-from eval.runtime_evaluator import RuntimeEvaluator
-from eval.scenario_evaluator import ScenarioEvalResult
 from eval.schema import EvalConfig
+
+if TYPE_CHECKING:
+    from eval.runtime_evaluator import RuntimeEvaluator
+    from eval.scenario_evaluator import ScenarioEvalResult
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +132,7 @@ class EventBasedRollout:
     route_generator: RouteGenerator | None = field(init=False)
     runtime_cameras: list[RuntimeCamera] = field(init=False, default_factory=list)
 
-    _runtime_evaluator: RuntimeEvaluator = field(init=False)
+    _runtime_evaluator: RuntimeEvaluator | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         """Initialize mutable state."""
@@ -176,17 +178,18 @@ class EventBasedRollout:
             route_start_offset_m=self.unbound.route_start_offset_m,
         )
 
-        self._runtime_evaluator = RuntimeEvaluator(
-            eval_config=self.eval_config,
-            rollout_uuid=self.unbound.rollout_uuid,
-            scene_id=self.unbound.scene_id,
-            save_path_root=self.unbound.save_path_root,
-            vector_map=self.unbound.vector_map,
-        )
+        self.broadcaster = MessageBroadcaster(handlers=[asl_log_writer])
+        if self.eval_config.enabled:
+            from eval.runtime_evaluator import RuntimeEvaluator
 
-        self.broadcaster = MessageBroadcaster(
-            handlers=[asl_log_writer, self._runtime_evaluator],
-        )
+            self._runtime_evaluator = RuntimeEvaluator(
+                eval_config=self.eval_config,
+                rollout_uuid=self.unbound.rollout_uuid,
+                scene_id=self.unbound.scene_id,
+                save_path_root=self.unbound.save_path_root,
+                vector_map=self.unbound.vector_map,
+            )
+            self.broadcaster.handlers.append(self._runtime_evaluator)
 
     def _rollout_dir(self) -> str:
         return os.path.join(self.unbound.save_path_root, self.unbound.rollout_uuid)
@@ -648,9 +651,11 @@ class EventBasedRollout:
             if ctx is not None:
                 ctx.record_rollout_duration(rollout_duration)
 
-            eval_result = await self._runtime_evaluator.run_evaluation(
-                self.eval_executor
-            )
+            eval_result = None
+            if self._runtime_evaluator is not None:
+                eval_result = await self._runtime_evaluator.run_evaluation(
+                    self.eval_executor
+                )
 
             mark_rollout_complete(
                 self.unbound.save_path_root, self.unbound.rollout_uuid

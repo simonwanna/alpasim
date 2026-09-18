@@ -9,6 +9,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 from alpasim_grpc.v0.logging_pb2 import RolloutMetadata
@@ -26,7 +27,9 @@ from alpasim_runtime.services.sensorsim_service import ImageFormat
 from alpasim_utils.geometry import Pose, Trajectory
 from alpasim_utils.scenario import AABB, Rig, TrafficObject, TrafficObjects
 from alpasim_utils.scene_data_source import SceneDataSource
-from trajdata.maps import VectorMap
+
+if TYPE_CHECKING:
+    from trajdata.maps import VectorMap
 
 logger = logging.getLogger(__name__)
 

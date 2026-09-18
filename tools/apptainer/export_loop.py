@@ -1,0 +1,387 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
+"""Export one native rollout ASL to timestamped frames and slow preview GIFs.
+
+Overlays show logged predictions, without terrain or occlusion correction.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import io
+import json
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+
+@dataclass
+class Frame:
+    timestamp_us: int
+    rig_pose: object
+    image: object
+
+
+@dataclass
+class Plan:
+    decision_timestamp_us: int
+    timestamps_us: list[int]
+    positions_local_m: list[list[float]]
+
+
+def positions(trajectory):
+    return [[p.pose.vec.x, p.pose.vec.y, p.pose.vec.z] for p in trajectory.poses]
+
+
+def validate_trajectory(trajectory):
+    times = [p.timestamp_us for p in trajectory.poses]
+    if not times or len(times) != len(trajectory.poses):
+        raise ValueError("Trajectory pose/timestamp counts must match and be nonempty")
+    if any(b <= a for a, b in zip(times, times[1:])):
+        raise ValueError("Trajectory timestamps must be strictly increasing")
+    if not np.isfinite(positions(trajectory)).all():
+        raise ValueError("Trajectory contains non-finite positions")
+    return times
+
+
+def pose_inverse_points(points, pose):
+    """Transform local points into the rig frame using its logged local pose."""
+    from overlay_plan import rig_to_optical
+
+    optical = rig_to_optical(points, pose)
+    # rig_to_optical additionally applies FLU -> RDF; undo that basis change.
+    return np.column_stack((optical[:, 2], -optical[:, 0], -optical[:, 1]))
+
+
+@dataclass
+class RolloutExport:
+    camera: str
+    max_frames: int = 2000
+    counts: Counter = field(default_factory=Counter)
+    frames: list[Frame] = field(default_factory=list)
+    plans: list[Plan] = field(default_factory=list)
+    session: object = None
+    metadata: object = None
+    pending_chunk: object = None
+    pending_driver: object = None
+    nonidentity_egomotion_error: bool = False
+    image_bytes: int = 0
+    session_id: str | None = None
+
+    def add(self, entry):
+        kind = entry.WhichOneof("log_entry")
+        self.counts[kind] += 1
+        if sum(self.counts.values()) > 100_000:
+            raise ValueError(
+                "Export is limited to a short rollout (100000 log entries)"
+            )
+        if kind == "rollout_metadata":
+            if self.metadata is not None:
+                raise ValueError("Expected exactly one rollout metadata entry")
+            self.metadata = entry.rollout_metadata
+        elif kind == "video_model_session_request":
+            if self.session is not None:
+                raise ValueError("Expected exactly one video-model session")
+            self.session = entry.video_model_session_request
+        elif kind == "video_model_chunk_request":
+            if self.pending_chunk is not None:
+                raise ValueError("Ambiguous overlapping video chunk requests")
+            request = entry.video_model_chunk_request
+            session_id = request.session_id.session_id
+            if self.session_id is not None and session_id != self.session_id:
+                raise ValueError("Video chunk requests belong to different sessions")
+            self.session_id = session_id
+            validate_trajectory(request.rig_trajectory)
+            self.pending_chunk = request
+        elif kind == "video_model_chunk_return":
+            if self.pending_chunk is None:
+                raise ValueError("Video chunk return has no matching request")
+            outputs = [
+                c
+                for c in entry.video_model_chunk_return.camera_outputs
+                if c.camera_logical_id == self.camera
+            ]
+            if len(outputs) != 1:
+                raise ValueError(
+                    "Expected exactly one selected camera output per chunk"
+                )
+            trajectory = self.pending_chunk.rig_trajectory
+            images = outputs[0].rgb_frames
+            if len(images) != len(trajectory.poses):
+                raise ValueError("Video frame/request timestamp counts do not match")
+            if len(self.frames) + len(images) > self.max_frames:
+                raise ValueError("Export frame limit exceeded")
+            for timed_pose, image in zip(trajectory.poses, images):
+                timestamp, pose = timed_pose.timestamp_us, timed_pose.pose
+                if self.frames and timestamp <= self.frames[-1].timestamp_us:
+                    raise ValueError(
+                        "Frame timestamps must be strictly increasing across chunks"
+                    )
+                self.image_bytes += len(image.data)
+                if self.image_bytes > 256 * 1024 * 1024:
+                    raise ValueError("Compressed image export limit exceeded (256 MiB)")
+                self.frames.append(Frame(timestamp, pose, image))
+            self.pending_chunk = None
+        elif kind == "driver_request":
+            if self.pending_driver is not None:
+                raise ValueError("Ambiguous overlapping driver requests")
+            request = entry.driver_request
+            if (
+                self.plans
+                and request.time_now_us <= self.plans[-1].decision_timestamp_us
+            ):
+                raise ValueError(
+                    "Driver decision timestamps must be strictly increasing"
+                )
+            self.pending_driver = request
+        elif kind == "driver_return":
+            if self.pending_driver is None:
+                raise ValueError("Driver return has no matching request")
+            trajectory = entry.driver_return.trajectory
+            times = validate_trajectory(trajectory)
+            self.plans.append(
+                Plan(self.pending_driver.time_now_us, times, positions(trajectory))
+            )
+            self.pending_driver = None
+        elif kind == "egomotion_estimate_error":
+            pose = entry.egomotion_estimate_error.pose
+            q = np.array([pose.quat.x, pose.quat.y, pose.quat.z, pose.quat.w])
+            self.nonidentity_egomotion_error |= not (
+                np.allclose([pose.vec.x, pose.vec.y, pose.vec.z], 0, atol=1e-7)
+                and np.allclose(q[:3], 0, atol=1e-7)
+                and np.isclose(abs(q[3]), 1, atol=1e-7)
+            )
+
+    def finish(self):
+        if self.pending_chunk is not None or self.pending_driver is not None:
+            raise ValueError("ASL ends with an unmatched service request")
+        if self.metadata is None or self.session is None or not self.frames:
+            raise ValueError(
+                "ASL must contain metadata, a video session, and generated frames"
+            )
+        if len(self.session.rig_to_camera) != len(self.session.camera_specs):
+            raise ValueError("Camera specification/extrinsic counts do not match")
+        indices = [
+            i
+            for i, s in enumerate(self.session.camera_specs)
+            if s.logical_id == self.camera
+        ]
+        if len(indices) != 1:
+            raise ValueError("Expected one selected camera specification")
+        return indices[0]
+
+    @property
+    def handover_us(self):
+        return (
+            self.metadata.session_metadata.render_start_timestamp_us
+            + self.metadata.force_gt_duration
+        )
+
+    def plan_at(self, timestamp_us):
+        # Decision time is when the prediction was requested in simulated time.
+        # time_query_us is its control target, not a wall-clock completion time.
+        eligible = [p for p in self.plans if p.decision_timestamp_us <= timestamp_us]
+        return eligible[-1] if eligible else None
+
+
+def overlay_frame(rgb, frame, plan, spec, extrinsic):
+    from alpasim_driver.rectification import (
+        _FthetaCamera,
+        _scale_ftheta_intrinsics_to_resolution,
+    )
+    from overlay_plan import draw_plan, rig_to_optical
+
+    if plan is None:
+        return rgb
+    points = np.array(plan.positions_local_m)
+    points = points[np.array(plan.timestamps_us) >= frame.timestamp_us]
+    if len(points) < 2:
+        return rgb
+    samples = np.concatenate(
+        [np.linspace(a, b, 32, endpoint=False) for a, b in zip(points, points[1:])]
+        + [points[-1:]]
+    )
+    rig = pose_inverse_points(samples, frame.rig_pose)
+    optical = rig_to_optical(rig, extrinsic)
+    scaled = _scale_ftheta_intrinsics_to_resolution(
+        spec.ftheta_param, (spec.resolution_h, spec.resolution_w), rgb.shape[:2]
+    )
+    pixels, valid = _FthetaCamera(scaled, rgb.shape[:2]).ray_to_pixel(optical)
+    return draw_plan(rgb, pixels, valid)
+
+
+def save_gif(paths, destination, fps):
+    def previews():
+        for path in paths:
+            with Image.open(path) as image:
+                image.thumbnail((640, 360), Image.Resampling.LANCZOS)
+                yield image.convert("P", palette=Image.Palette.ADAPTIVE)
+
+    iterator = previews()
+    first = next(iterator)
+    first.save(
+        destination,
+        save_all=True,
+        append_images=iterator,
+        duration=round(1000 / fps),
+        loop=0,
+    )
+
+
+def require_closed_loop_activity(run):
+    if run.session.debug_options.skip_video_generation:
+        raise ValueError("Video generation was disabled in the logged session")
+    post_warmup = [p for p in run.plans if p.decision_timestamp_us >= run.handover_us]
+    if not post_warmup:
+        raise ValueError("No post-warmup policy decisions in rollout")
+    if not any(
+        f.timestamp_us > post_warmup[0].decision_timestamp_us for f in run.frames
+    ):
+        raise ValueError("No generated frames after a post-warmup policy decision")
+    for service in ("driver", "controller", "physics"):
+        requested = run.counts[f"{service}_request"]
+        returned = run.counts[f"{service}_return"]
+        if requested == 0 or returned != requested:
+            raise ValueError(f"Expected completed {service} request/return activity")
+
+
+def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=False):
+    from alpasim_grpc.v0 import video_model_pb2
+
+    index = run.finish()
+    if require_closed_loop:
+        require_closed_loop_activity(run)
+    spec = run.session.camera_specs[index]
+    if overlay:
+        if run.nonidentity_egomotion_error:
+            raise ValueError(
+                "Overlay requires zero egomotion error; raw plans use estimated local coordinates"
+            )
+        if spec.WhichOneof("camera_param") != "ftheta_param":
+            raise ValueError("Overlay currently requires an f-theta camera")
+    output.mkdir(parents=True, exist_ok=False)
+    (output / "frames").mkdir()
+    if overlay:
+        (output / "overlay-frames").mkdir()
+    rows = []
+    paths, overlay_paths = [], []
+    expected_shape = None
+    for i, frame in enumerate(run.frames):
+        if frame.image.format not in (video_model_pb2.JPEG, video_model_pb2.PNG):
+            raise ValueError("Export supports JPEG and PNG frame payloads")
+        with Image.open(io.BytesIO(frame.image.data)) as image:
+            if image.width * image.height > 8_000_000:
+                raise ValueError("Decoded frame exceeds 8 million pixels")
+            rgb = np.array(image.convert("RGB"))
+        if expected_shape is not None and rgb.shape != expected_shape:
+            raise ValueError("Frame resolution changed within the selected camera")
+        expected_shape = rgb.shape
+        path = output / "frames" / f"{i:05d}.jpg"
+        Image.fromarray(rgb).save(path, quality=95)
+        paths.append(path)
+        plan = run.plan_at(frame.timestamp_us)
+        if overlay:
+            rendered = overlay_frame(
+                rgb, frame, plan, spec, run.session.rig_to_camera[index]
+            )
+            overlay_path = output / "overlay-frames" / path.name
+            Image.fromarray(rendered).save(overlay_path, quality=95)
+            overlay_paths.append(overlay_path)
+        rows.append(
+            {
+                "file": str(path.relative_to(output)),
+                "timestamp_us": frame.timestamp_us,
+                "phase": (
+                    "recorded_warmup"
+                    if frame.timestamp_us < run.handover_us
+                    else "closed_loop"
+                ),
+                "plan_decision_timestamp_us": (
+                    None if plan is None else plan.decision_timestamp_us
+                ),
+            }
+        )
+    save_gif(paths, output / "preview-slow.gif", fps)
+    if overlay:
+        save_gif(overlay_paths, output / "plan-overlay-slow.gif", fps)
+    (output / "predicted-plans.json").write_text(
+        json.dumps(
+            [
+                {
+                    "decision_timestamp_us": p.decision_timestamp_us,
+                    "timestamps_us": p.timestamps_us,
+                    "positions_local_m": p.positions_local_m,
+                }
+                for p in run.plans
+            ],
+            indent=2,
+        )
+        + "\n"
+    )
+    summary = {
+        "camera": run.camera,
+        "generated_frames": len(run.frames),
+        "warmup_frames": sum(r["phase"] == "recorded_warmup" for r in rows),
+        "closed_loop_frames": sum(r["phase"] == "closed_loop" for r in rows),
+        "handover_timestamp_us": run.handover_us,
+        "post_warmup_driver_requests": sum(
+            p.decision_timestamp_us >= run.handover_us for p in run.plans
+        ),
+        "counts": {
+            **{
+                f"{service}_{direction}": 0
+                for service in ("driver", "controller", "physics")
+                for direction in ("request", "return")
+            },
+            **dict(run.counts),
+        },
+        "closed_loop_activity_required": require_closed_loop,
+        "preview_fps": fps,
+        "overlay_scope": (
+            "Latest prediction by simulated decision time; not executed motion; "
+            "no terrain or occlusion correction"
+        ),
+        "frames": rows,
+    }
+    (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print(
+        json.dumps({k: v for k, v in summary.items() if k != "frames"}, indent=2),
+        flush=True,
+    )
+    print("Export:", output, flush=True)
+    return summary
+
+
+async def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--log", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--camera", default="camera_front_wide_120fov")
+    parser.add_argument("--overlay", action="store_true")
+    parser.add_argument("--require-closed-loop", action="store_true")
+    parser.add_argument("--max-frames", type=int, default=2000)
+    parser.add_argument("--fps", type=int, default=10)
+    args = parser.parse_args()
+    if not 1 <= args.max_frames <= 2000 or not 1 <= args.fps <= 30:
+        parser.error("--max-frames must be 1..2000; --fps must be 1..30")
+    from alpasim_utils.logs import async_read_pb_log
+
+    run = RolloutExport(args.camera, max_frames=args.max_frames)
+    async for entry in async_read_pb_log(str(args.log), raise_on_malformed=True):
+        run.add(entry)
+    export_artifacts(
+        run,
+        args.output_dir,
+        overlay=args.overlay,
+        fps=args.fps,
+        require_closed_loop=args.require_closed_loop,
+    )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -11,14 +11,15 @@ import logging
 from dataclasses import dataclass, field
 from multiprocessing import Queue
 from time import monotonic
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from alpasim_grpc.v0.logging_pb2 import RolloutMetadata
 from alpasim_runtime.address_pool import ServiceAddress
 from alpasim_runtime.telemetry.rpc_wrapper import SharedRpcTracking
-
-from eval.scenario_evaluator import ScenarioEvalResult
 from eval.schema import EvalConfig
+
+if TYPE_CHECKING:
+    from eval.scenario_evaluator import ScenarioEvalResult
 
 logger = logging.getLogger(__name__)
 

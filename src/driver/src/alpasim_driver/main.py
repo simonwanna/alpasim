@@ -65,7 +65,6 @@ from .models.base import (
     ModelPrediction,
     PredictionInput,
 )
-from .models.manual_model import ManualModel
 from .navigation import determine_command_from_route
 from .rectification import (
     FthetaToPinholeRectifier,
@@ -1204,6 +1203,8 @@ def main(hydra_cfg: DriverConfig) -> None:
     # thread. This is required on macOS (Cocoa), and we use the same approach
     # on Linux for consistency and simpler maintenance.
     if cfg.model.model_type == "manual":
+        from .models.manual_model import ManualModel
+
         logger.info("Starting gRPC server in background thread (GUI mode)")
 
         ready_event = threading.Event()
