@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 
 @dataclass
@@ -32,6 +32,7 @@ class Plan:
     decision_timestamp_us: int
     timestamps_us: list[int]
     positions_local_m: list[list[float]]
+    origin_pose: object = None
 
 
 def positions(trajectory):
@@ -145,7 +146,16 @@ class RolloutExport:
             trajectory = entry.driver_return.trajectory
             times = validate_trajectory(trajectory)
             self.plans.append(
-                Plan(self.pending_driver.time_now_us, times, positions(trajectory))
+                Plan(
+                    self.pending_driver.time_now_us,
+                    times,
+                    positions(trajectory),
+                    (
+                        trajectory.poses[0].pose
+                        if trajectory.poses[0].HasField("pose")
+                        else None
+                    ),
+                )
             )
             self.pending_driver = None
         elif kind == "egomotion_estimate_error":
@@ -189,15 +199,21 @@ class RolloutExport:
         return eligible[-1] if eligible else None
 
 
-def overlay_frame(rgb, frame, plan, spec, extrinsic):
+def overlay_frame(rgb, frame, plan, spec, extrinsic, reference="world"):
     from alpasim_driver.rectification import (
         _FthetaCamera,
         _scale_ftheta_intrinsics_to_resolution,
     )
     from overlay_plan import draw_plan, rig_to_optical
 
+    if reference not in ("world", "ego"):
+        raise ValueError("Overlay reference must be world or ego")
     if plan is None:
         return rgb
+    if reference == "ego" and plan.origin_pose is None:
+        raise ValueError(
+            "Ego-anchored overlay requires the logged prediction origin pose"
+        )
     # Match DriverResponses.render_on_camera: retain the full world-space plan
     # between decisions. Removing waypoints as their timestamps pass makes the
     # near end jump; camera depth/FOV clipping determines what remains visible.
@@ -208,13 +224,72 @@ def overlay_frame(rgb, frame, plan, spec, extrinsic):
         [np.linspace(a, b, 32, endpoint=False) for a, b in zip(points, points[1:])]
         + [points[-1:]]
     )
-    rig = pose_inverse_points(samples, frame.rig_pose)
+    # Ego display holds the prediction in its own rig frame between decisions.
+    # The world overlay instead uses the current frame's rig pose.
+    origin = frame.rig_pose if reference == "world" else plan.origin_pose
+    rig = pose_inverse_points(samples, origin)
     optical = rig_to_optical(rig, extrinsic)
     scaled = _scale_ftheta_intrinsics_to_resolution(
         spec.ftheta_param, (spec.resolution_h, spec.resolution_w), rgb.shape[:2]
     )
     pixels, valid = _FthetaCamera(scaled, rgb.shape[:2]).ray_to_pixel(optical)
     return draw_plan(rgb, pixels, valid)
+
+
+def caption_overlay(rgb, frame, plan, reference):
+    """Label display semantics outside the camera image's pixel coordinates."""
+    image = Image.fromarray(rgb)
+    font_size = max(12, round(image.width / 60))
+    font = ImageFont.load_default(size=font_size)
+    canvas = Image.new(
+        "RGB", (image.width, image.height + 2 * font_size + 16), (20, 20, 20)
+    )
+    canvas.paste(image, (0, 0))
+    draw = ImageDraw.Draw(canvas)
+    title = (
+        "Ego-anchored plan display"
+        if reference == "ego"
+        else "World-referenced plan projection"
+    )
+    draw.text((8, image.height + 4), title, fill="white", font=font)
+    detail = "No prediction available at this frame"
+    if plan is not None:
+        age_ms = (frame.timestamp_us - plan.decision_timestamp_us) / 1000
+        detail = f"Decision: {plan.decision_timestamp_us} us | age: {age_ms:.1f} ms"
+    draw.text((8, image.height + font_size + 9), detail, fill="white", font=font)
+    return canvas
+
+
+def pose_json(pose):
+    if pose is None:
+        return None
+    return {
+        "position_local_m": [pose.vec.x, pose.vec.y, pose.vec.z],
+        "quaternion_xyzw": [pose.quat.x, pose.quat.y, pose.quat.z, pose.quat.w],
+    }
+
+
+def ego_motion_summary(frames):
+    first, last = frames[0], frames[-1]
+    first_position = np.array(pose_json(first.rig_pose)["position_local_m"])
+    last_position = np.array(pose_json(last.rig_pose)["position_local_m"])
+    delta = pose_inverse_points(last_position[None, :], first.rig_pose)[0]
+    # Inverse-transform translated world basis points to recover each unit
+    # quaternion's rotation matrix, using the same convention as the overlays.
+    first_rotation = pose_inverse_points(np.eye(3) + first_position, first.rig_pose)
+    last_rotation = pose_inverse_points(np.eye(3) + last_position, last.rig_pose)
+    relative = first_rotation.T @ last_rotation
+    return {
+        "source": "Logged video-model request rig poses",
+        "first_timestamp_us": first.timestamp_us,
+        "last_timestamp_us": last.timestamp_us,
+        "first_position_local_m": first_position.tolist(),
+        "last_position_local_m": last_position.tolist(),
+        "delta_in_initial_rig_m": delta.tolist(),
+        "forward_delta_m": float(delta[0]),
+        "lateral_delta_m": float(delta[1]),
+        "yaw_change_deg": float(np.degrees(np.arctan2(relative[1, 0], relative[0, 0]))),
+    }
 
 
 def save_gif(paths, destination, fps):
@@ -252,13 +327,31 @@ def require_closed_loop_activity(run):
             raise ValueError(f"Expected completed {service} request/return activity")
 
 
-def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=False):
+def export_artifacts(
+    run,
+    output,
+    overlay=False,
+    fps=10,
+    require_closed_loop=False,
+    overlay_reference="world",
+):
     from alpasim_grpc.v0 import video_model_pb2
 
     index = run.finish()
     if require_closed_loop:
         require_closed_loop_activity(run)
     spec = run.session.camera_specs[index]
+    if overlay_reference not in ("world", "ego", "both"):
+        raise ValueError("Overlay reference must be world, ego, or both")
+    references = (
+        ("world", "ego") if overlay_reference == "both" else (overlay_reference,)
+    )
+    if not overlay:
+        references = ()
+    if "ego" in references and any(plan.origin_pose is None for plan in run.plans):
+        raise ValueError(
+            "Ego-anchored overlay requires the logged prediction origin pose"
+        )
     if overlay:
         if run.nonidentity_egomotion_error:
             raise ValueError(
@@ -268,10 +361,16 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
             raise ValueError("Overlay currently requires an f-theta camera")
     output.mkdir(parents=True, exist_ok=False)
     (output / "frames").mkdir()
-    if overlay:
-        (output / "overlay-frames").mkdir()
+    overlay_dirs = {"world": "overlay-frames", "ego": "ego-overlay-frames"}
+    overlay_gifs = {
+        "world": "plan-overlay-slow.gif",
+        "ego": "ego-plan-overlay-slow.gif",
+    }
+    for reference in references:
+        (output / overlay_dirs[reference]).mkdir()
     rows = []
-    paths, overlay_paths = [], []
+    paths = []
+    overlay_paths = {reference: [] for reference in references}
     expected_shape = None
     for i, frame in enumerate(run.frames):
         if frame.image.format not in (video_model_pb2.JPEG, video_model_pb2.PNG):
@@ -287,15 +386,19 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
         Image.fromarray(rgb).save(path, quality=95)
         paths.append(path)
         plan = run.plan_at(frame.timestamp_us)
-        overlay_pixels = 0
-        if overlay:
+        overlay_pixels = {"world": 0, "ego": 0}
+        for reference in references:
             rendered = overlay_frame(
-                rgb, frame, plan, spec, run.session.rig_to_camera[index]
+                rgb, frame, plan, spec, run.session.rig_to_camera[index], reference
             )
-            overlay_pixels = int(np.count_nonzero(np.any(rendered != rgb, axis=-1)))
-            overlay_path = output / "overlay-frames" / path.name
-            Image.fromarray(rendered).save(overlay_path, quality=95)
-            overlay_paths.append(overlay_path)
+            overlay_pixels[reference] = int(
+                np.count_nonzero(np.any(rendered != rgb, axis=-1))
+            )
+            overlay_path = output / overlay_dirs[reference] / path.name
+            caption_overlay(rendered, frame, plan, reference).save(
+                overlay_path, quality=95
+            )
+            overlay_paths[reference].append(overlay_path)
         rows.append(
             {
                 "file": str(path.relative_to(output)),
@@ -308,12 +411,18 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
                 "plan_decision_timestamp_us": (
                     None if plan is None else plan.decision_timestamp_us
                 ),
-                "overlay_pixels": overlay_pixels,
+                "plan_age_us": (
+                    None
+                    if plan is None
+                    else frame.timestamp_us - plan.decision_timestamp_us
+                ),
+                "overlay_pixels": overlay_pixels["world"],
+                "ego_overlay_pixels": overlay_pixels["ego"],
             }
         )
     save_gif(paths, output / "preview-slow.gif", fps)
-    if overlay:
-        save_gif(overlay_paths, output / "plan-overlay-slow.gif", fps)
+    for reference in references:
+        save_gif(overlay_paths[reference], output / overlay_gifs[reference], fps)
     (output / "predicted-plans.json").write_text(
         json.dumps(
             [
@@ -321,6 +430,10 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
                     "decision_timestamp_us": p.decision_timestamp_us,
                     "timestamps_us": p.timestamps_us,
                     "positions_local_m": p.positions_local_m,
+                    "origin_pose": pose_json(p.origin_pose),
+                    "origin_timestamp_us": (
+                        p.timestamps_us[0] if p.origin_pose is not None else None
+                    ),
                 }
                 for p in run.plans
             ],
@@ -347,6 +460,11 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
         },
         "closed_loop_activity_required": require_closed_loop,
         "preview_fps": fps,
+        "overlay_references": list(references),
+        "ego_motion": ego_motion_summary(run.frames),
+        "frames_with_visible_ego_overlay": sum(
+            r["ego_overlay_pixels"] > 0 for r in rows
+        ),
         "frames_with_visible_overlay": sum(r["overlay_pixels"] > 0 for r in rows),
         "overlay_scope": (
             "Latest prediction by simulated decision time; not executed motion; "
@@ -369,6 +487,9 @@ async def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--camera", default="camera_front_wide_120fov")
     parser.add_argument("--overlay", action="store_true")
+    parser.add_argument(
+        "--overlay-reference", choices=("world", "ego", "both"), default="world"
+    )
     parser.add_argument("--require-closed-loop", action="store_true")
     parser.add_argument("--max-frames", type=int, default=2000)
     parser.add_argument("--fps", type=int, default=10)
@@ -386,6 +507,7 @@ async def main():
         overlay=args.overlay,
         fps=args.fps,
         require_closed_loop=args.require_closed_loop,
+        overlay_reference=args.overlay_reference,
     )
 
 

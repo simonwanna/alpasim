@@ -210,6 +210,7 @@ class Run:
                 ports=ports,
                 steps=self.args.steps,
                 command=self.args.command,
+                approach_steps=self.args.approach_steps,
             )
             spec_path = self.work / "launch.json"
             spec_path.write_text(json.dumps(spec, indent=2) + "\n")
@@ -335,6 +336,8 @@ class Run:
                         "--output-dir",
                         self.inside(self.work / "video"),
                         "--overlay",
+                        "--overlay-reference",
+                        "both",
                         "--require-closed-loop",
                     ),
                     limit=120,
@@ -347,6 +350,11 @@ class Run:
             print(
                 "Plan overlay:",
                 self.work / "video" / "plan-overlay-slow.gif",
+                flush=True,
+            )
+            print(
+                "Ego display:",
+                self.work / "video" / "ego-plan-overlay-slow.gif",
                 flush=True,
             )
         finally:
@@ -362,13 +370,21 @@ def main():
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument(
+        "--approach-steps",
+        type=int,
+        default=0,
+        help="Extra recorded control intervals before policy handover",
+    )
+    parser.add_argument(
         "--command", choices=("straight", "left", "right"), default="straight"
     )
     for name in ("scene", "checkpoint", "tokenizer", "seed-session"):
         parser.add_argument(f"--{name}", type=Path)
     args = parser.parse_args()
-    if not 4 <= args.steps <= 60 or args.timeout <= 0:
-        parser.error("Use 4..60 simulation steps and a positive timeout")
+    if not 4 <= args.steps <= 180 or args.timeout <= 0:
+        parser.error("Use 4..180 simulation steps and a positive timeout")
+    if not 0 <= args.approach_steps <= args.steps - 3:
+        parser.error("Approach must leave at least two policy-controlled intervals")
     if args.run:
         for name in ("scene", "checkpoint", "tokenizer", "seed_session"):
             path = getattr(args, name)
@@ -413,6 +429,7 @@ def main():
                     "export_completed": run.export_completed,
                     "steps": args.steps,
                     "command": args.command,
+                    "approach_steps": args.approach_steps,
                 }
             )
             + "\n"

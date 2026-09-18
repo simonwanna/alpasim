@@ -63,6 +63,7 @@ def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch)
         seed_session=tmp_path / "session.pb",
         steps=12,
         command="straight",
+        approach_steps=0,
     )
     monkeypatch.setattr(
         loop,
@@ -149,10 +150,12 @@ def test_failed_check_preserves_evidence_and_does_not_report_runtime_started(
 
 
 @pytest.mark.parametrize("command,code", [("straight", 2), ("left", 1), ("right", 0)])
+@pytest.mark.parametrize("approach_steps", [0, 8])
 def test_generated_driver_config_parses_real_schema_and_preserves_camera_preset(
     monkeypatch,
     command,
     code,
+    approach_steps,
 ):
     monkeypatch.syspath_prepend(str(TOOLS))
     import prepare_loop
@@ -171,6 +174,7 @@ def test_generated_driver_config_parses_real_schema_and_preserves_camera_preset(
         tokenizer="/workspace/tokenizer.jit",
         steps=12,
         command=command,
+        approach_steps=approach_steps,
         ports=dict(driver=10001, physics=10002, controller=10003, renderer=10004),
     )
     user, network, driver = prepare_loop.build_configs(
@@ -192,6 +196,25 @@ def test_generated_driver_config_parses_real_schema_and_preserves_camera_preset(
         < user["simulation_config"]["control_timestep_us"] * spec["steps"]
     )
     assert user["endpoints"]["trafficsim"]["skip"]
+    simulation = user["simulation_config"]
+    assert simulation["skip_driver_during_force_gt"] == (approach_steps > 0)
+    handover = simulation["force_gt_duration_us"]
+    end = 5 * 33333 + simulation["n_sim_steps"] * simulation["control_timestep_us"]
+    assert (end - handover) // simulation["control_timestep_us"] == 11 - approach_steps
+
+
+@pytest.mark.parametrize("approach", [-1, 10, 12])
+def test_reject_approach_without_feedback_intervals(monkeypatch, approach):
+    monkeypatch.syspath_prepend(str(TOOLS))
+    import prepare_loop
+
+    with pytest.raises(ValueError, match="two closed-loop intervals"):
+        prepare_loop.build_configs(
+            dict(work="/workspace/run", ports={}, steps=12, approach_steps=approach),
+            "scene",
+            {},
+            {},
+        )
 
 
 def test_environment_check_records_import_errors_and_keeps_checking(

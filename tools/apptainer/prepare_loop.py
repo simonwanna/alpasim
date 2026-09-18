@@ -13,6 +13,11 @@ def build_configs(spec, scene_id, rectification, prompt):
     work = Path(spec["work"])
     ports = spec["ports"]
     services = ("driver", "controller", "physics", "renderer")
+    approach_steps = spec["approach_steps"]
+    if not 0 <= approach_steps <= spec["steps"] - 3:
+        raise ValueError(
+            "Recorded approach must leave at least two closed-loop intervals"
+        )
     user = {
         "nr_workers": 1,
         "max_rollout_retries": 0,
@@ -45,7 +50,8 @@ def build_configs(spec, scene_id, rectification, prompt):
             "n_sim_steps": spec["steps"],
             "n_rollouts": 1,
             "control_timestep_us": 8 * 33333,
-            "force_gt_duration_us": 13 * 33333,
+            "force_gt_duration_us": (13 + 8 * approach_steps) * 33333,
+            "skip_driver_during_force_gt": approach_steps > 0,
             "planner_delay_us": 0,
             "assert_zero_decision_delay": True,
             "physics_update_mode": "EGO_ONLY",
@@ -104,6 +110,7 @@ def main():
     from alpasim_driver.schema import DriverConfig
     from alpasim_grpc.v0 import video_model_pb2
     from alpasim_runtime.config import NetworkSimulatorConfig, UserSimulatorConfig
+    from alpasim_utils.scenario import Rig
     from alpasim_utils.yaml_utils import typed_parse_config
     from eval.schema import EvalConfig
     from omegaconf import OmegaConf
@@ -111,6 +118,7 @@ def main():
     root = Path(__file__).resolve().parents[2]
     with ZipFile(spec["scene"]) as archive:
         metadata = yaml.safe_load(archive.read("metadata.yaml"))
+        (rig,) = Rig.load_from_json(archive.read("rig_trajectories.json").decode())
     scene_id = metadata["scene_id"]
     request = video_model_pb2.SessionRequest.FromString(
         Path(spec["seed_session"]).read_bytes()
@@ -123,6 +131,12 @@ def main():
         (root / "src/wizard/configs/driver/vavam_video_model.yaml").read_text()
     )["driver"]["rectification"]
     user, network, driver = build_configs(spec, scene_id, rectification, prompt)
+    anchor_us = rig.first_camera_frame_end_us(["camera_front_wide_120fov"])
+    end_us = anchor_us + (5 + 8 * spec["steps"]) * 33333
+    if end_us >= rig.trajectory.time_range_us.stop:
+        raise ValueError(
+            "Requested approach and maneuver exceed the recorded scene duration"
+        )
     work = Path(spec["work"])
     config_dir = work / "configs"
     config_dir.mkdir()
@@ -152,6 +166,11 @@ def main():
     (simulation / "run_metadata.yaml").write_text("run_name: native-closed-loop\n")
     print(
         "PASS: native runtime and service configs parsed; scene:", scene_id, flush=True
+    )
+    print(
+        "Policy handover offset (s):",
+        user["simulation_config"]["force_gt_duration_us"] / 1e6,
+        flush=True,
     )
 
 
