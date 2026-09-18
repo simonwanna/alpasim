@@ -198,8 +198,10 @@ def overlay_frame(rgb, frame, plan, spec, extrinsic):
 
     if plan is None:
         return rgb
+    # Match DriverResponses.render_on_camera: retain the full world-space plan
+    # between decisions. Removing waypoints as their timestamps pass makes the
+    # near end jump; camera depth/FOV clipping determines what remains visible.
     points = np.array(plan.positions_local_m)
-    points = points[np.array(plan.timestamps_us) >= frame.timestamp_us]
     if len(points) < 2:
         return rgb
     samples = np.concatenate(
@@ -285,10 +287,12 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
         Image.fromarray(rgb).save(path, quality=95)
         paths.append(path)
         plan = run.plan_at(frame.timestamp_us)
+        overlay_pixels = 0
         if overlay:
             rendered = overlay_frame(
                 rgb, frame, plan, spec, run.session.rig_to_camera[index]
             )
+            overlay_pixels = int(np.count_nonzero(np.any(rendered != rgb, axis=-1)))
             overlay_path = output / "overlay-frames" / path.name
             Image.fromarray(rendered).save(overlay_path, quality=95)
             overlay_paths.append(overlay_path)
@@ -304,6 +308,7 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
                 "plan_decision_timestamp_us": (
                     None if plan is None else plan.decision_timestamp_us
                 ),
+                "overlay_pixels": overlay_pixels,
             }
         )
     save_gif(paths, output / "preview-slow.gif", fps)
@@ -342,6 +347,7 @@ def export_artifacts(run, output, overlay=False, fps=10, require_closed_loop=Fal
         },
         "closed_loop_activity_required": require_closed_loop,
         "preview_fps": fps,
+        "frames_with_visible_overlay": sum(r["overlay_pixels"] > 0 for r in rows),
         "overlay_scope": (
             "Latest prediction by simulated decision time; not executed motion; "
             "no terrain or occlusion correction"

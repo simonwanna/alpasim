@@ -62,6 +62,7 @@ def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch)
         tokenizer=tmp_path / "tokenizer.jit",
         seed_session=tmp_path / "session.pb",
         steps=12,
+        command="straight",
     )
     monkeypatch.setattr(
         loop,
@@ -87,6 +88,8 @@ def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="controller launch checked"):
         run.simulate()
     assert (tmp_path / "controller-output/session.csv").is_file()
+    launch = json.loads((tmp_path / "launch.json").read_text())
+    assert launch["command"] == "straight"
 
 
 def test_cleanup_only_stops_owned_process(loop):
@@ -105,8 +108,9 @@ def test_cleanup_only_stops_owned_process(loop):
         loop.stop_launchers(processes)
 
 
+@pytest.mark.parametrize("command", [None, "left", "right"])
 def test_failed_check_preserves_evidence_and_does_not_report_runtime_started(
-    loop, tmp_path, monkeypatch
+    loop, tmp_path, monkeypatch, command
 ):
     work = tmp_path / "results"
     state = SimpleNamespace(
@@ -132,18 +136,23 @@ def test_failed_check_preserves_evidence_and_does_not_report_runtime_started(
             str(tmp_path / "cache"),
             "--output-dir",
             str(work),
+            *([] if command is None else ["--command", command]),
         ],
     )
     previous = signal.getsignal(signal.SIGTERM)
     assert loop.main() == 1
     assert signal.getsignal(signal.SIGTERM) == previous
     result = json.loads((work / "status.json").read_text())
+    assert result["command"] == (command or "straight")
     assert result["exit_status"] == 1
     assert not result["runtime_started"] and not result["export_completed"]
 
 
+@pytest.mark.parametrize("command,code", [("straight", 2), ("left", 1), ("right", 0)])
 def test_generated_driver_config_parses_real_schema_and_preserves_camera_preset(
     monkeypatch,
+    command,
+    code,
 ):
     monkeypatch.syspath_prepend(str(TOOLS))
     import prepare_loop
@@ -161,6 +170,7 @@ def test_generated_driver_config_parses_real_schema_and_preserves_camera_preset(
         checkpoint="/workspace/policy.pt",
         tokenizer="/workspace/tokenizer.jit",
         steps=12,
+        command=command,
         ports=dict(driver=10001, physics=10002, controller=10003, renderer=10004),
     )
     user, network, driver = prepare_loop.build_configs(
@@ -169,6 +179,8 @@ def test_generated_driver_config_parses_real_schema_and_preserves_camera_preset(
     parsed = OmegaConf.to_object(
         OmegaConf.merge(OmegaConf.structured(DriverConfig), driver)
     )
+    assert parsed.route.default_command == code
+    assert not parsed.route.use_waypoint_commands
     assert parsed.model.checkpoint_path == spec["checkpoint"]
     assert (
         list(parsed.rectification["camera_front_wide_120fov"].resolution_hw)

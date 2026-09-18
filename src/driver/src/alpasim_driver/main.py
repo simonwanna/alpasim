@@ -214,6 +214,22 @@ class Session:
             Camera count validation is now handled by the model's __init__
             which raises ValueError if the camera count doesn't match.
         """
+        # RouteConfig uses legacy right/left/straight codes, not DriveCommand values.
+        command_codes = {
+            0: DriveCommand.RIGHT,
+            1: DriveCommand.LEFT,
+            2: DriveCommand.STRAIGHT,
+        }
+        default_command = cfg.route.default_command
+        if (
+            not isinstance(default_command, int)
+            or isinstance(default_command, bool)
+            or default_command not in command_codes
+        ):
+            raise ValueError(
+                "route.default_command must be 0 (right), 1 (left), or 2 (straight)"
+            )
+
         debug_scene_id = (
             request.debug_info.scene_id
             if request.debug_info is not None
@@ -273,6 +289,7 @@ class Session:
             seed=request.random_seed,
             debug_scene_id=debug_scene_id,
             frame_caches=frame_caches,
+            current_command=command_codes[default_command],
             rectification_cfg=cfg.rectification,
             rectification_camera_specs={
                 logical_id: camera_specs[logical_id]

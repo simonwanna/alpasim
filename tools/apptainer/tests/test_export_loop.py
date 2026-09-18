@@ -219,6 +219,25 @@ def test_no_plan_leaves_frame_unchanged():
     assert export.overlay_frame(rgb, None, None, None, None) is rgb
 
 
+def test_plan_keeps_near_segment_between_decisions():
+    spec = sensorsim.CameraSpec(logical_id=CAMERA, resolution_h=120, resolution_w=240)
+    lens = spec.ftheta_param
+    lens.principal_point_x = 120
+    lens.principal_point_y = 60
+    lens.angle_to_pixeldist_poly.extend([0, 80])
+    lens.max_angle = 1.4
+    rgb = np.zeros((120, 240, 3), dtype=np.uint8)
+    plan = export.Plan(100, [100, 200, 300], [[0, 0, 0], [10, 0, 0], [20, 0, 0]])
+    early = export.overlay_frame(
+        rgb, export.Frame(100, pose(), None), plan, spec, pose(z=2)
+    )
+    later = export.overlay_frame(
+        rgb, export.Frame(250, pose(), None), plan, spec, pose(z=2)
+    )
+    assert np.any(early != rgb)
+    np.testing.assert_array_equal(early, later)
+
+
 def test_strict_gate_rejects_all_warmup_and_missing_physics(tmp_path):
     run = start()
     run.add(chunk_request([100, 200, 300]))

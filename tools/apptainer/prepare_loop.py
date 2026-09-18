@@ -85,7 +85,10 @@ def build_configs(spec, scene_id, rectification, prompt):
             "context_length": 1,
             "subsample_factor": 1,
         },
-        "route": {"default_command": 2, "use_waypoint_commands": False},
+        "route": {
+            "default_command": {"right": 0, "left": 1, "straight": 2}[spec["command"]],
+            "use_waypoint_commands": False,
+        },
         "trajectory_optimizer": {"enabled": False},
         "rectification": rectification,
     }

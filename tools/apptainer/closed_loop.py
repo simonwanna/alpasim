@@ -205,7 +205,12 @@ class Run:
                 name: self.inside(getattr(self.args, name))
                 for name in ("scene", "checkpoint", "tokenizer", "seed_session")
             }
-            spec.update(work=self.inside(self.work), ports=ports, steps=self.args.steps)
+            spec.update(
+                work=self.inside(self.work),
+                ports=ports,
+                steps=self.args.steps,
+                command=self.args.command,
+            )
             spec_path = self.work / "launch.json"
             spec_path.write_text(json.dumps(spec, indent=2) + "\n")
             self.finish(
@@ -356,6 +361,9 @@ def main():
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--steps", type=int, default=12)
+    parser.add_argument(
+        "--command", choices=("straight", "left", "right"), default="straight"
+    )
     for name in ("scene", "checkpoint", "tokenizer", "seed-session"):
         parser.add_argument(f"--{name}", type=Path)
     args = parser.parse_args()
@@ -404,6 +412,7 @@ def main():
                     "runtime_started": run.runtime_started,
                     "export_completed": run.export_completed,
                     "steps": args.steps,
+                    "command": args.command,
                 }
             )
             + "\n"
