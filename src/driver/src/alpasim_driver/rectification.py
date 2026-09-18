@@ -135,7 +135,7 @@ class _PinholeCamera:
 
 
 class _FthetaCamera:
-    """Projects unit rays into pixel coordinates using theta→radius polynomials."""
+    """Project rays using a forward polynomial or an inverted backward polynomial."""
 
     def __init__(
         self,
@@ -163,6 +163,49 @@ class _FthetaCamera:
             dtype=np.float64,
         )
         self._source_resolution = resolution_hw
+        self._inverse_table: tuple[np.ndarray, np.ndarray] | None = None
+        if (
+            intrinsics.reference_poly
+            == sensorsim_pb2.FthetaCameraParam.PIXELDIST_TO_ANGLE
+        ):
+            coeffs = np.asarray(intrinsics.pixeldist_to_angle_poly, dtype=np.float64)
+            if coeffs.size < 2 or not np.isfinite(coeffs).all():
+                raise ValueError("Missing or invalid backward calibration")
+            height, width = resolution_hw
+            corners = np.array(
+                [
+                    [-0.5, -0.5],
+                    [width - 0.5, -0.5],
+                    [-0.5, height - 0.5],
+                    [width - 0.5, height - 0.5],
+                ]
+            )
+            offsets = np.linalg.solve(
+                self._linear_matrix, (corners - self._principal_point).T
+            ).T
+            radius_max = np.linalg.norm(offsets, axis=1).max()
+            poly = np.polynomial.Polynomial(coeffs)
+            # Normalize the radial domain before checking derivative extrema.
+            scaled = np.polynomial.Polynomial(
+                coeffs * radius_max ** np.arange(coeffs.size)
+            )
+            roots = scaled.deriv(2).roots()
+            critical = [0.0, 1.0] + [
+                root.real
+                for root in roots
+                if abs(root.imag) < 1e-9 and 0 < root.real < 1
+            ]
+            slopes = scaled.deriv()(np.asarray(critical, dtype=np.float64))
+            if not np.isfinite(slopes).all() or min(slopes) <= 0:
+                raise ValueError("Backward calibration is not strictly increasing")
+            # Linear interpolation avoids fitting an unstable inverse polynomial.
+            radii = np.linspace(0.0, radius_max, 4097)
+            angles = poly(radii)
+            if not np.isfinite(angles).all() or not (np.diff(angles) > 0).all():
+                raise ValueError("Invalid inverse calibration table")
+            self._inverse_table = (angles, radii)
+        elif not self._angle_to_pixeldist.size:
+            raise ValueError("Missing forward calibration")
 
     def ray_to_pixel(self, rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Project rays (N,3) into pixel coordinates.
@@ -183,7 +226,11 @@ class _FthetaCamera:
         else:
             within_fov = theta <= self._max_angle + 1e-6
 
-        radii = np.polynomial.polynomial.polyval(theta, self._angle_to_pixeldist)
+        if self._inverse_table is None:
+            radii = np.polynomial.polynomial.polyval(theta, self._angle_to_pixeldist)
+        else:
+            angles, distances = self._inverse_table
+            radii = np.interp(theta, angles, distances, left=np.nan, right=np.nan)
         # Avoid division by zero for rays along the optical axis.
         with np.errstate(divide="ignore", invalid="ignore"):
             scales = np.divide(
@@ -201,7 +248,7 @@ class _FthetaCamera:
             & (pixels[:, 1] >= -0.5)
             & (pixels[:, 1] <= height - 0.5)
         )
-        valid = positive_z & within_fov & in_image
+        valid = positive_z & within_fov & in_image & np.isfinite(radii)
 
         return pixels.reshape(rays.shape[:-1] + (2,)), valid.reshape(rays.shape[:-1])
 

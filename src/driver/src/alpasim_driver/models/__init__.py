@@ -3,9 +3,8 @@
 
 """Model abstraction layer for trajectory prediction models."""
 
-from .alpamayo1_5_model import Alpamayo15Model
-from .alpamayo1_model import Alpamayo1Model
-from .alpamayo2_model import Alpamayo2Model
+from importlib import import_module
+
 from .base import (
     BaseTrajectoryModel,
     CameraFrame,
@@ -14,8 +13,24 @@ from .base import (
     ModelPrediction,
     PredictionInput,
 )
-from .manual_model import ManualModel
-from .vam_model import VAMModel
+
+_MODEL_MODULES = {
+    "Alpamayo15Model": ".alpamayo1_5_model",
+    "Alpamayo1Model": ".alpamayo1_model",
+    "Alpamayo2Model": ".alpamayo2_model",
+    "ManualModel": ".manual_model",
+    "VAMModel": ".vam_model",
+}
+
+
+def __getattr__(name: str):
+    """Import optional model dependencies only when that backend is requested."""
+    if name not in _MODEL_MODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    model = getattr(import_module(_MODEL_MODULES[name], __name__), name)
+    globals()[name] = model
+    return model
+
 
 __all__ = [
     "Alpamayo15Model",

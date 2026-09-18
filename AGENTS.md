@@ -63,3 +63,10 @@ When asked to access any of the following services, check if you have access to 
 
 - Linar
 - Gitlab (especially relevant for MRs)
+
+## Publication privacy
+
+- Keep private operational notes in ignored `project-memory/`. Never commit them.
+- Never publish deployment site/provider names, account/allocation identifiers, private hostnames, or operational paths in files, filenames, branch names, or commit messages. Use generic names and configurable paths.
+- Before publishing, verify both the final diff and reachable history. A later deletion does not remove private data from earlier commits. Rebuild from a clean base and selectively preserve generic functional changes when correcting a disclosure.
+- Permission to publish code does not authorize publishing private operational information.

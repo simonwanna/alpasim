@@ -8,12 +8,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 import torch
-from alpasim_utils.geometry import Pose, Trajectory
 from PIL import Image
+
+if TYPE_CHECKING:
+    from alpasim_utils.geometry import Pose, Trajectory
 
 
 class DriveCommand(IntEnum):

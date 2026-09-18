@@ -43,3 +43,6 @@ asset_harvesting/
 /*.log
 /plugins/internal/src/tools/rollout_viewer/rollout_viewer_data/
 /plugins/internal/src/tools/rollout_viewer/**/*.log
+
+# Private local operational notes
+/project-memory/
