@@ -419,14 +419,100 @@ def test_both_overlay_artifacts_preserve_world_outputs_and_record_origin(tmp_pat
     run.add(chunk_return(2))
     add_plan(run, 100, (100, 200))
     out = tmp_path / "both"
-    summary = export.export_artifacts(run, out, overlay=True, overlay_reference="both")
+    summary = export.export_artifacts(
+        run, out, overlay=True, overlay_reference="both", overlay_min_forward_m=6
+    )
     assert (out / "plan-overlay-slow.gif").is_file()
     assert (out / "ego-plan-overlay-slow.gif").is_file()
     assert len(list((out / "overlay-frames").glob("*.jpg"))) == 2
     assert len(list((out / "ego-overlay-frames").glob("*.jpg"))) == 2
     assert summary["overlay_references"] == ["world", "ego"]
+    assert summary["overlay_min_forward_m"] == 6
     assert [row["plan_age_us"] for row in summary["frames"]] == [0, 100]
     plans = json.loads((out / "predicted-plans.json").read_text())
     assert plans[0]["origin_pose"]["position_local_m"] == [10, 0, 0]
     assert plans[0]["origin_pose"]["quaternion_xyzw"] == [0, 0, 0, 1]
     assert plans[0]["origin_timestamp_us"] == 100
+
+
+@pytest.mark.parametrize("reference,rig_offset", [("ego", 0), ("world", 3)])
+def test_forward_cutoff_omits_near_samples_without_moving_far_projection(
+    projection, monkeypatch, reference, rig_offset
+):
+    import overlay_plan
+
+    rgb, spec, mount = projection
+    plan = export.Plan(100, [100, 200], [[2, 0, 0], [10, 0, 0]], pose())
+    frame = export.Frame(150, pose(x=3), None)
+    captures = []
+    original_draw = overlay_plan.draw_plan
+
+    def capture(image, pixels, valid):
+        captures.append((pixels.copy(), valid.copy()))
+        return original_draw(image, pixels, valid)
+
+    monkeypatch.setattr(overlay_plan, "draw_plan", capture)
+    uncut = export.overlay_frame(rgb, frame, plan, spec, mount, reference)
+    clipped = export.overlay_frame(
+        rgb, frame, plan, spec, mount, reference, min_forward_m=6
+    )
+    samples_x = np.linspace(2, 10, 33) - rig_offset
+    np.testing.assert_allclose(captures[0][0], captures[1][0], equal_nan=True)
+    np.testing.assert_array_equal(captures[1][1], captures[0][1] & (samples_x >= 6))
+    assert captures[1][1].any()
+    assert np.any(uncut != clipped)
+
+
+def test_forward_cutoff_does_not_bridge_hidden_middle_segment(projection):
+    rgb, spec, _ = projection
+    # Both ends are visible and far forward, but the connecting middle comes
+    # inside the cutoff. It must remain a gap rather than a line across the road.
+    plan = export.Plan(
+        100, [100, 200, 300], [[10, -6, 0], [2, 0, 0], [10, 6, 0]], pose()
+    )
+    rendered = export.overlay_frame(
+        rgb,
+        export.Frame(100, pose(), None),
+        plan,
+        spec,
+        pose(z=0.5),
+        reference="ego",
+        min_forward_m=6,
+    )
+    assert (rendered[:, :110, 1] > 200).any()
+    assert (rendered[:, 130:, 1] > 200).any()
+    np.testing.assert_array_equal(rendered[:, 114:126], rgb[:, 114:126])
+
+
+@pytest.mark.parametrize("cutoff", [-1, float("nan"), float("inf")])
+def test_invalid_forward_cutoff_is_rejected_before_output(projection, tmp_path, cutoff):
+    rgb, spec, mount = projection
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        export.overlay_frame(rgb, None, None, spec, mount, min_forward_m=cutoff)
+    output = tmp_path / "invalid"
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        export.export_artifacts(None, output, overlay_min_forward_m=cutoff)
+    assert not output.exists()
+
+
+def test_forward_cutoff_caption_is_explicit_and_camera_pixels_unchanged(
+    projection, monkeypatch
+):
+    rgb, _, _ = projection
+    captured = []
+    original_draw = export.ImageDraw.Draw
+
+    class CapturingDraw:
+        def __init__(self, image):
+            self.draw = original_draw(image)
+
+        def text(self, position, text, **kwargs):
+            captured.append(text)
+            self.draw.text(position, text, **kwargs)
+
+    monkeypatch.setattr(export.ImageDraw, "Draw", CapturingDraw)
+    captioned = export.caption_overlay(
+        rgb, export.Frame(100, pose(), None), None, "ego", 6
+    )
+    assert "display cutoff: rig forward >= 6 m" in captured[0]
+    np.testing.assert_array_equal(np.array(captioned)[: rgb.shape[0]], rgb)

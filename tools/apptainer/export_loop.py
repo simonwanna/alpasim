@@ -199,13 +199,19 @@ class RolloutExport:
         return eligible[-1] if eligible else None
 
 
-def overlay_frame(rgb, frame, plan, spec, extrinsic, reference="world"):
+def overlay_frame(
+    rgb, frame, plan, spec, extrinsic, reference="world", min_forward_m=0.0
+):
     from alpasim_driver.rectification import (
         _FthetaCamera,
         _scale_ftheta_intrinsics_to_resolution,
     )
     from overlay_plan import draw_plan, rig_to_optical
 
+    if not np.isfinite(min_forward_m) or min_forward_m < 0:
+        raise ValueError(
+            "Overlay minimum forward distance must be finite and nonnegative"
+        )
     if reference not in ("world", "ego"):
         raise ValueError("Overlay reference must be world or ego")
     if plan is None:
@@ -233,10 +239,14 @@ def overlay_frame(rgb, frame, plan, spec, extrinsic, reference="world"):
         spec.ftheta_param, (spec.resolution_h, spec.resolution_w), rgb.shape[:2]
     )
     pixels, valid = _FthetaCamera(scaled, rgb.shape[:2]).ray_to_pixel(optical)
+    if min_forward_m > 0:
+        # Keep the original sample order and gaps. Removing samples here could
+        # reconnect a visible path across a section hidden by the display cutoff.
+        valid &= rig[:, 0] >= min_forward_m
     return draw_plan(rgb, pixels, valid)
 
 
-def caption_overlay(rgb, frame, plan, reference):
+def caption_overlay(rgb, frame, plan, reference, min_forward_m=0.0):
     """Label display semantics outside the camera image's pixel coordinates."""
     image = Image.fromarray(rgb)
     font_size = max(12, round(image.width / 60))
@@ -251,6 +261,8 @@ def caption_overlay(rgb, frame, plan, reference):
         if reference == "ego"
         else "World-referenced plan projection"
     )
+    if min_forward_m > 0:
+        title += f" | display cutoff: rig forward >= {min_forward_m:g} m"
     draw.text((8, image.height + 4), title, fill="white", font=font)
     detail = "No prediction available at this frame"
     if plan is not None:
@@ -337,9 +349,14 @@ def export_artifacts(
     fps=10,
     require_closed_loop=False,
     overlay_reference="world",
+    overlay_min_forward_m=0.0,
 ):
     from alpasim_grpc.v0 import video_model_pb2
 
+    if not np.isfinite(overlay_min_forward_m) or overlay_min_forward_m < 0:
+        raise ValueError(
+            "Overlay minimum forward distance must be finite and nonnegative"
+        )
     index = run.finish()
     if require_closed_loop:
         require_closed_loop_activity(run)
@@ -392,15 +409,21 @@ def export_artifacts(
         overlay_pixels = {"world": 0, "ego": 0}
         for reference in references:
             rendered = overlay_frame(
-                rgb, frame, plan, spec, run.session.rig_to_camera[index], reference
+                rgb,
+                frame,
+                plan,
+                spec,
+                run.session.rig_to_camera[index],
+                reference,
+                min_forward_m=overlay_min_forward_m,
             )
             overlay_pixels[reference] = int(
                 np.count_nonzero(np.any(rendered != rgb, axis=-1))
             )
             overlay_path = output / overlay_dirs[reference] / path.name
-            caption_overlay(rendered, frame, plan, reference).save(
-                overlay_path, quality=95
-            )
+            caption_overlay(
+                rendered, frame, plan, reference, overlay_min_forward_m
+            ).save(overlay_path, quality=95)
             overlay_paths[reference].append(overlay_path)
         rows.append(
             {
@@ -462,6 +485,7 @@ def export_artifacts(
         "video_export_completed": False,
         "preview_fps": fps,
         "overlay_references": list(references),
+        "overlay_min_forward_m": overlay_min_forward_m,
         "ego_motion": ego_motion_summary(run.frames),
         "frames_with_visible_ego_overlay": sum(
             r["ego_overlay_pixels"] > 0 for r in rows
@@ -501,12 +525,15 @@ async def main():
     parser.add_argument(
         "--overlay-reference", choices=("world", "ego", "both"), default="world"
     )
+    parser.add_argument("--overlay-min-forward-m", type=float, default=0.0)
     parser.add_argument("--require-closed-loop", action="store_true")
     parser.add_argument("--max-frames", type=int, default=2000)
     parser.add_argument("--fps", type=int, default=10)
     args = parser.parse_args()
     if not 1 <= args.max_frames <= 2000 or not 1 <= args.fps <= 30:
         parser.error("--max-frames must be 1..2000; --fps must be 1..30")
+    if not np.isfinite(args.overlay_min_forward_m) or args.overlay_min_forward_m < 0:
+        parser.error("--overlay-min-forward-m must be finite and nonnegative")
     from alpasim_utils.logs import async_read_pb_log
 
     run = RolloutExport(args.camera, max_frames=args.max_frames)
@@ -519,6 +546,7 @@ async def main():
         fps=args.fps,
         require_closed_loop=args.require_closed_loop,
         overlay_reference=args.overlay_reference,
+        overlay_min_forward_m=args.overlay_min_forward_m,
     )
 
 

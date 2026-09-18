@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
 import socket
@@ -338,6 +339,8 @@ class Run:
                         "--overlay",
                         "--overlay-reference",
                         "both",
+                        "--overlay-min-forward-m",
+                        str(self.args.overlay_min_forward_m),
                         "--require-closed-loop",
                     ),
                     limit=self.args.export_timeout,
@@ -376,6 +379,12 @@ def main():
     )
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument(
+        "--overlay-min-forward-m",
+        type=float,
+        default=0.0,
+        help="Hide overlay samples closer than this rig-forward distance; display only",
+    )
+    parser.add_argument(
         "--approach-steps",
         type=int,
         default=0,
@@ -391,6 +400,8 @@ def main():
         parser.error("Use 4..180 simulation steps and a positive timeout")
     if args.export_timeout <= 0:
         parser.error("Export timeout must be positive")
+    if not math.isfinite(args.overlay_min_forward_m) or args.overlay_min_forward_m < 0:
+        parser.error("Overlay minimum forward distance must be finite and nonnegative")
     if not 0 <= args.approach_steps <= args.steps - 3:
         parser.error("Approach must leave at least two policy-controlled intervals")
     if args.run:
