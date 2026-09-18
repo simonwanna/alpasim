@@ -197,6 +197,7 @@ class Run:
                 time.sleep(0.5)
 
     def simulate(self):
+        (self.work / "controller-output").mkdir()
         reservations = reserve_ports()
         try:
             ports = {name: sock.getsockname()[1] for name, sock in reservations.items()}

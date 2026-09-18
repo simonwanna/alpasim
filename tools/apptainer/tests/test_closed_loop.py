@@ -53,6 +53,42 @@ def test_startup_failure_is_detected_before_connecting(loop, monkeypatch):
         run.wait_ready({"physics": SimpleNamespace(poll=lambda: 1)}, {"physics": 1234})
 
 
+def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch):
+    run = object.__new__(loop.Run)
+    run.work = run.root = run.project = tmp_path
+    run.args = SimpleNamespace(
+        scene=tmp_path / "scene.usdz",
+        checkpoint=tmp_path / "model.pt",
+        tokenizer=tmp_path / "tokenizer.jit",
+        seed_session=tmp_path / "session.pb",
+        steps=12,
+    )
+    monkeypatch.setattr(
+        loop,
+        "reserve_ports",
+        lambda: {
+            name: SimpleNamespace(
+                getsockname=lambda: ("127.0.0.1", 1234), close=lambda: None
+            )
+            for name in loop.SERVICES
+        },
+    )
+    run.finish = lambda *args: None
+
+    def launch(name, profile, arguments, **kwargs):
+        if name == "controller":
+            container_dir = Path(arguments[arguments.index("--log_dir") + 1])
+            host_dir = tmp_path / container_dir.relative_to("/workspace")
+            (host_dir / "session.csv").write_text("timestamp,x,y\n")
+            raise RuntimeError("controller launch checked")
+        assert name == "prepare"
+
+    run.launch = launch
+    with pytest.raises(RuntimeError, match="controller launch checked"):
+        run.simulate()
+    assert (tmp_path / "controller-output/session.csv").is_file()
+
+
 def test_cleanup_only_stops_owned_process(loop):
     processes = [
         subprocess.Popen(
