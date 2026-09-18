@@ -61,6 +61,8 @@ def main() -> None:
         )
     print("Loading cached checkpoint:", args.checkpoint.name, flush=True)
     started = time.monotonic()
+    # Memory-stat APIs require the CUDA allocator to be initialized first.
+    torch.cuda.init()
     torch.cuda.reset_peak_memory_stats(device)
     model = VAMModel(
         checkpoint_path=str(args.checkpoint),
