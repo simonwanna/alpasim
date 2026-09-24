@@ -42,6 +42,9 @@ def args(tmp_path):
         cache_dir=project / "personal/cache",
         profile="policy",
         gpu=False,
+        gpu_index=None,
+        venv=None,
+        hf_home=None,
         python_args=["-c", 'print("literal $HOME and `text`")'],
     )
 
@@ -79,6 +82,40 @@ def test_gpu_selection_is_preserved(args):
     assert env["CUDA_VISIBLE_DEVICES"] == "2"
     assert env["TRITON_LIBCUDA_PATH"] == "/.singularity.d/libs"
     with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES"):
+        launcher.build_command(args, {})
+
+
+@pytest.mark.parametrize(
+    "visible", ["2,5", "GPU-first,GPU-second", "MIG-first,MIG-second"]
+)
+def test_gpu_ordinal_selects_only_an_allocated_device(args, visible):
+    args.gpu = True
+    args.gpu_index = 1
+    _, env = launcher.build_command(args, {"CUDA_VISIBLE_DEVICES": visible})
+    assert env["CUDA_VISIBLE_DEVICES"] == visible.split(",")[1]
+    for invalid in (-1, 2):
+        args.gpu_index = invalid
+        with pytest.raises(ValueError, match="outside"):
+            launcher.build_command(args, {"CUDA_VISIBLE_DEVICES": visible})
+
+
+def test_gpu_selection_cannot_enable_gpu_implicitly(args):
+    args.gpu_index = 0
+    with pytest.raises(ValueError, match="requires --gpu"):
+        launcher.build_command(args, {"CUDA_VISIBLE_DEVICES": "0"})
+
+
+def test_policy_uses_separate_environment_and_offline_asset_cache(args):
+    args.venv = args.project / "apps/policy-env"
+    args.venv.mkdir()
+    (args.venv / "pyvenv.cfg").touch()
+    args.hf_home = args.project / "shared/policy-cache"
+    command, env = launcher.build_command(args, {})
+    assert "/workspace/apps/policy-env/bin/python" in command
+    assert env["HF_HUB_CACHE"] == "/workspace/shared/policy-cache/hub"
+    assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
+    args.venv = args.project.parent
+    with pytest.raises(ValueError, match="inside project"):
         launcher.build_command(args, {})
 
 

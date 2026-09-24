@@ -20,9 +20,30 @@ import sys
 import time
 from pathlib import Path
 
-from apptainer_exec import project_path
+from apptainer_exec import allocated_gpu, project_path
 
 SERVICES = ("controller", "physics", "driver", "renderer")
+
+
+def validate_alpamayo_checkpoint(path: Path, project: Path):
+    """Check local checkpoint completeness without loading weights or downloading."""
+    path = project_path(path, project)
+    if not path.is_dir() or not (path / "config.json").is_file():
+        raise ValueError(
+            "Alpamayo checkpoint must be a local directory containing config.json"
+        )
+    json.loads((path / "config.json").read_text())
+    index = path / "model.safetensors.index.json"
+    if index.is_file():
+        shards = set(json.loads(index.read_text())["weight_map"].values())
+        if not shards:
+            raise ValueError("Alpamayo checkpoint weight index is empty")
+    else:
+        shards = {"model.safetensors"}
+    for name in shards:
+        shard = project_path(path / name, project)
+        if not shard.is_file() or shard.stat().st_size == 0:
+            raise ValueError(f"Missing or empty Alpamayo checkpoint shard: {name}")
 
 
 def reserve_ports():
@@ -61,6 +82,15 @@ class Run:
         self.work = project_path(args.output_dir, self.project)
         self.cache = project_path(args.cache_dir, self.project)
         self.image = project_path(args.image, self.project)
+        self.policy_venv = project_path(
+            args.policy_venv
+            or self.project
+            / "apps/alpasim"
+            / (".venv-vavam" if args.policy == "vavam" else ".venv-alpamayo1_5"),
+            self.project,
+        )
+        if args.policy_hf_home is not None:
+            project_path(args.policy_hf_home, self.project)
         project_path(self.root, self.project)
         if (
             self.cache == self.work
@@ -101,14 +131,26 @@ class Run:
             "--profile",
             profile,
             "--cache-dir",
-            str(self.cache / profile),
+            str(
+                self.cache
+                / (
+                    self.args.policy
+                    if profile == "policy" and self.args.policy != "vavam"
+                    else profile
+                )
+            ),
             "--output-dir",
             str(self.work / name),
             "--timeout",
             str(timeout),
         ]
+        if profile == "policy":
+            command += ["--venv", str(self.policy_venv)]
+            if self.args.policy_hf_home is not None:
+                command += ["--hf-home", str(self.args.policy_hf_home)]
         if gpu:
-            command.append("--gpu")
+            index = self.args.policy_gpu if name == "driver" else self.args.renderer_gpu
+            command += ["--gpu", "--gpu-index", str(index)]
         command += ["--", *python_args]
         log = (self.work / f"{name}.launcher.log").open("w")
         self.logs.append(log)
@@ -151,6 +193,8 @@ class Run:
                     self.inside(self.root / "tools/apptainer/service_entry.py"),
                     "--check",
                     profile,
+                    "--policy",
+                    self.args.policy,
                 ],
                 limit=120,
             )
@@ -204,14 +248,19 @@ class Run:
             ports = {name: sock.getsockname()[1] for name, sock in reservations.items()}
             spec = {
                 name: self.inside(getattr(self.args, name))
-                for name in ("scene", "checkpoint", "tokenizer", "seed_session")
+                for name in ("scene", "checkpoint", "seed_session")
             }
+            if self.args.tokenizer is not None:
+                spec["tokenizer"] = self.inside(self.args.tokenizer)
             spec.update(
                 work=self.inside(self.work),
                 ports=ports,
                 steps=self.args.steps,
                 command=self.args.command,
                 approach_steps=self.args.approach_steps,
+                policy=self.args.policy,
+                policy_gpu=self.args.policy_gpu,
+                renderer_gpu=self.args.renderer_gpu,
             )
             spec_path = self.work / "launch.json"
             spec_path.write_text(json.dumps(spec, indent=2) + "\n")
@@ -378,6 +427,29 @@ def main():
         help="GIF export limit in seconds, within the overall timeout",
     )
     parser.add_argument("--steps", type=int, default=12)
+    parser.add_argument("--policy", choices=("vavam", "alpamayo1_5"), default="vavam")
+    parser.add_argument(
+        "--policy-venv",
+        type=Path,
+        help="Existing policy environment; default apps/alpasim/.venv-<policy>",
+    )
+    parser.add_argument(
+        "--policy-hf-home",
+        type=Path,
+        help="Offline HF cache containing the policy's processor assets",
+    )
+    parser.add_argument(
+        "--policy-gpu",
+        type=int,
+        default=0,
+        help="Policy GPU ordinal within CUDA_VISIBLE_DEVICES",
+    )
+    parser.add_argument(
+        "--renderer-gpu",
+        type=int,
+        default=0,
+        help="Renderer/physics GPU ordinal within CUDA_VISIBLE_DEVICES",
+    )
     parser.add_argument(
         "--overlay-min-forward-m",
         type=float,
@@ -387,15 +459,30 @@ def main():
     parser.add_argument(
         "--approach-steps",
         type=int,
-        default=0,
-        help="Extra recorded control intervals before policy handover",
+        default=None,
+        help="Extra recorded control intervals before policy handover (default: VaVAM 0, Alpamayo 6)",
     )
     parser.add_argument(
-        "--command", choices=("straight", "left", "right"), default="straight"
+        "--command",
+        choices=("straight", "left", "right"),
+        help="VaVAM instruction (default straight); Alpamayo uses the recorded route",
     )
     for name in ("scene", "checkpoint", "tokenizer", "seed-session"):
         parser.add_argument(f"--{name}", type=Path)
     args = parser.parse_args()
+    if args.policy == "alpamayo1_5":
+        if args.command is not None or args.tokenizer is not None:
+            parser.error(
+                "Alpamayo uses a checkpoint directory and recorded-route navigation, not --command/--tokenizer"
+            )
+        if args.approach_steps is None:
+            args.approach_steps = 6
+        if args.approach_steps < 6:
+            parser.error("Alpamayo requires at least 6 approach steps for ego history")
+    else:
+        args.command = args.command or "straight"
+        if args.approach_steps is None:
+            args.approach_steps = 0
     if not 4 <= args.steps <= 180 or args.timeout <= 0:
         parser.error("Use 4..180 simulation steps and a positive timeout")
     if args.export_timeout <= 0:
@@ -404,14 +491,32 @@ def main():
         parser.error("Overlay minimum forward distance must be finite and nonnegative")
     if not 0 <= args.approach_steps <= args.steps - 3:
         parser.error("Approach must leave at least two policy-controlled intervals")
+    if args.policy_gpu < 0 or args.renderer_gpu < 0:
+        parser.error("GPU ordinals must be nonnegative")
     if args.run:
-        for name in ("scene", "checkpoint", "tokenizer", "seed_session"):
+        names = ["scene", "checkpoint", "seed_session"]
+        if args.policy == "vavam":
+            names.append("tokenizer")
+        for name in names:
             path = getattr(args, name)
+            if name == "checkpoint" and args.policy == "alpamayo1_5":
+                if path is None:
+                    parser.error(
+                        "Alpamayo --run requires a local --checkpoint directory"
+                    )
+                try:
+                    validate_alpamayo_checkpoint(path, args.project.resolve())
+                except (ValueError, KeyError, TypeError, OSError) as error:
+                    parser.error(str(error))
+                continue
             if path is None or not path.is_file():
                 parser.error(f"--run requires existing --{name.replace('_', '-')} file")
             project_path(path, args.project.resolve())
-        if not os.environ.get("CUDA_VISIBLE_DEVICES"):
-            parser.error("--run requires the allocation's CUDA_VISIBLE_DEVICES")
+        try:
+            allocated_gpu(os.environ, args.policy_gpu)
+            allocated_gpu(os.environ, args.renderer_gpu)
+        except ValueError as error:
+            parser.error(str(error))
     run = Run(args)
     os.umask(0o002)
     run.work.mkdir(parents=True)
@@ -449,6 +554,12 @@ def main():
                     "steps": args.steps,
                     "command": args.command,
                     "approach_steps": args.approach_steps,
+                    "policy": args.policy,
+                    "navigation": "recorded_route"
+                    if args.policy == "alpamayo1_5"
+                    else "fixed_command",
+                    "policy_gpu": args.policy_gpu,
+                    "renderer_gpu": args.renderer_gpu,
                 }
             )
             + "\n"

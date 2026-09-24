@@ -30,6 +30,18 @@ def project_path(value: Path, project: Path) -> Path:
     return path
 
 
+def allocated_gpu(environ: dict, index: int) -> str:
+    """Select an ordinal within the caller's visible allocation, never a host ID."""
+    devices = environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+    if any(not d.strip() or d.strip() == "-1" for d in devices):
+        raise ValueError("CUDA_VISIBLE_DEVICES must identify the allocated GPU(s)")
+    if not 0 <= index < len(devices):
+        raise ValueError(
+            f"GPU index {index} is outside the {len(devices)} visible GPUs"
+        )
+    return devices[index].strip()
+
+
 def build_command(args: argparse.Namespace, environ: dict) -> tuple[list[str], dict]:
     project = args.project.resolve()
     if not project.is_dir() or any(c in str(project) for c in ",:\n"):
@@ -54,6 +66,8 @@ def build_command(args: argparse.Namespace, environ: dict) -> tuple[list[str], d
 
     binds = [f"{project}:{mount}"]
     if args.profile == "renderer":
+        if args.venv is not None or args.hf_home is not None:
+            raise ValueError("Renderer uses its fixed environment and model mount")
         renderer = project / "apps/flashdreams/flashdreams"
         models = project / "shared/flashdreams/huggingface"
         scenes = project / "shared/flashdreams/scenes"
@@ -71,10 +85,17 @@ def build_command(args: argparse.Namespace, environ: dict) -> tuple[list[str], d
         hf_home = "/models"
     else:
         environment = ".venv-vavam" if args.profile == "policy" else ".venv"
-        if not (project / "apps/alpasim" / environment / "pyvenv.cfg").is_file():
+        venv = project_path(
+            args.venv or project / "apps/alpasim" / environment, project
+        )
+        if not (venv / "pyvenv.cfg").is_file():
             raise ValueError(f"Missing AlpaSim {args.profile} environment")
-        python = f"/workspace/apps/alpasim/{environment}/bin/python"
-        hf_home = inside(cache / "huggingface")
+        python = inside(venv / "bin/python")
+        hf_home = (
+            inside(project_path(args.hf_home, project))
+            if args.hf_home
+            else inside(cache / "huggingface")
+        )
     container_cache = inside(cache)
     environment = {
         "TMPDIR": f"{container_cache}/tmp",
@@ -100,11 +121,17 @@ def build_command(args: argparse.Namespace, environ: dict) -> tuple[list[str], d
         "ALPASIM_RUN_DIR": inside(output),
     }
     command = ["apptainer", "exec", "--cleanenv"]
+    if args.gpu_index is not None and not args.gpu:
+        raise ValueError("--gpu-index requires --gpu")
     if args.gpu:
         if not environ.get("CUDA_VISIBLE_DEVICES"):
             raise ValueError("CUDA_VISIBLE_DEVICES must identify the allocated GPU(s)")
         command.append("--nv")
-        environment["CUDA_VISIBLE_DEVICES"] = environ["CUDA_VISIBLE_DEVICES"]
+        environment["CUDA_VISIBLE_DEVICES"] = (
+            allocated_gpu(environ, args.gpu_index)
+            if args.gpu_index is not None
+            else environ["CUDA_VISIBLE_DEVICES"]
+        )
         environment["TRITON_LIBCUDA_PATH"] = "/.singularity.d/libs"
     for bind in binds:
         command += ["--bind", bind]
@@ -148,6 +175,13 @@ def main() -> int:
         "--timeout", type=int, required=True, help="Maximum process runtime in seconds"
     )
     parser.add_argument("--gpu", action="store_true")
+    parser.add_argument("--gpu-index", type=int, help="Ordinal in CUDA_VISIBLE_DEVICES")
+    parser.add_argument(
+        "--venv", type=Path, help="Existing core/policy virtual environment"
+    )
+    parser.add_argument(
+        "--hf-home", type=Path, help="Existing offline Hugging Face cache"
+    )
     parser.add_argument(
         "--print-command",
         action="store_true",
@@ -196,9 +230,10 @@ def main() -> int:
     previous_handlers = {
         sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)
     }
-    with (args.output_dir / "process.log").open("w") as log, (
-        args.output_dir / "gpu.csv"
-    ).open("w") as gpu_log:
+    with (
+        (args.output_dir / "process.log").open("w") as log,
+        (args.output_dir / "gpu.csv").open("w") as gpu_log,
+    ):
         try:
             if args.gpu:
                 monitor = subprocess.Popen(

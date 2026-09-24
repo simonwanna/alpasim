@@ -26,7 +26,7 @@ SOURCE_DIRS = (
 )
 
 
-def check_environment(profile):
+def check_environment(profile, policy="vavam"):
     """Import service entry points without constructing services or models."""
     modules = {
         "core": [
@@ -38,7 +38,9 @@ def check_environment(profile):
         ],
         "policy": [
             "alpasim_driver.main",
-            "alpasim_driver.models.vam_model",
+            "alpasim_driver.models.vam_model"
+            if policy == "vavam"
+            else "alpasim_driver.models.alpamayo1_5_model",
             "alpasim_utils.logs",
         ],
     }[profile]
@@ -68,6 +70,8 @@ def check_environment(profile):
             "opencv-python-headless",
         ],
     }[profile]
+    if profile == "policy" and policy == "alpamayo1_5":
+        distributions += ["alpamayo1_5", "transformers", "torchvision", "accelerate"]
     inventory = {}
     for name in distributions:
         try:
@@ -89,11 +93,25 @@ def check_environment(profile):
             importlib.metadata.version("alpasim-driver")
             from alpasim_plugins.plugins import models
 
-            models.get("vam")
-            print("PASS: installed VaVAM entry point and driver version", flush=True)
+            models.get("vam" if policy == "vavam" else policy)
+            print(
+                f"PASS: installed {policy} entry point and driver version", flush=True
+            )
         except Exception:
             failures["driver_registration"] = traceback.format_exc(limit=8)
             print(failures["driver_registration"], flush=True)
+        if policy == "alpamayo1_5":
+            try:
+                from alpamayo1_5 import helper
+                from transformers import AutoProcessor
+
+                AutoProcessor.from_pretrained(
+                    helper.BASE_PROCESSOR_NAME, local_files_only=True
+                )
+                print("PASS: cached Alpamayo image processor", flush=True)
+            except Exception:
+                failures["processor_cache"] = traceback.format_exc(limit=8)
+                print(failures["processor_cache"], flush=True)
     else:
         try:
             from alpasim_utils.geometry import DynamicTrajectory, Pose, Trajectory
@@ -106,7 +124,12 @@ def check_environment(profile):
         except Exception:
             failures["geometry_controller"] = traceback.format_exc(limit=8)
             print(failures["geometry_controller"], flush=True)
-    report = {"profile": profile, "inventory": inventory, "failures": failures}
+    report = {
+        "profile": profile,
+        "policy": policy if profile == "policy" else None,
+        "inventory": inventory,
+        "failures": failures,
+    }
     Path(os.environ["ALPASIM_RUN_DIR"], "environment.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
@@ -124,12 +147,13 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", choices=("core", "policy"))
     group.add_argument("--module")
+    parser.add_argument("--policy", choices=("vavam", "alpamayo1_5"), default="vavam")
     args, module_args = parser.parse_known_args()
     sys.path[:0] = [str(ROOT / name) for name in SOURCE_DIRS]
     if args.check:
         if module_args:
             parser.error("Unexpected arguments for --check")
-        return check_environment(args.check)
+        return check_environment(args.check, args.policy)
     sys.argv = [args.module, *module_args]
     runpy.run_module(args.module, run_name="__main__", alter_sys=True)
     return 0

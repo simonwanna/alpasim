@@ -18,6 +18,11 @@ def build_configs(spec, scene_id, rectification, prompt):
         raise ValueError(
             "Recorded approach must leave at least two closed-loop intervals"
         )
+    policy = spec["policy"]
+    if policy not in ("vavam", "alpamayo1_5"):
+        raise ValueError(f"Unknown policy: {policy}")
+    if policy == "alpamayo1_5" and approach_steps < 6:
+        raise ValueError("Alpamayo needs at least 6 approach steps for ego history")
     user = {
         "nr_workers": 1,
         "max_rollout_retries": 0,
@@ -79,25 +84,33 @@ def build_configs(spec, scene_id, rectification, prompt):
         "port": ports["driver"],
         "output_dir": str(work / "driver-output"),
         "model": {
-            "model_type": "vam",
+            "model_type": "vam" if policy == "vavam" else policy,
             "checkpoint_path": spec["checkpoint"],
-            "tokenizer_path": spec["tokenizer"],
             "device": "cuda:0",
             "image_decode_device": "cpu",
         },
         "inference": {
             "use_cameras": ["camera_front_wide_120fov"],
             "max_batch_size": 1,
-            "context_length": 1,
-            "subsample_factor": 1,
+            "context_length": 1 if policy == "vavam" else 4,
+            "subsample_factor": 1 if policy == "vavam" else 3,
         },
         "route": {
-            "default_command": {"right": 0, "left": 1, "straight": 2}[spec["command"]],
             "use_waypoint_commands": False,
         },
         "trajectory_optimizer": {"enabled": False},
-        "rectification": rectification,
     }
+    if policy == "vavam":
+        driver["model"]["tokenizer_path"] = spec["tokenizer"]
+        driver["route"]["default_command"] = {"right": 0, "left": 1, "straight": 2}[
+            spec["command"]
+        ]
+        driver["rectification"] = rectification
+    else:
+        # The upstream single-camera preset uses four temporal frames. Navigation
+        # comes from route geometry via Alpamayo's route_to_nav_text adapter.
+        driver["model"].update(num_trajectory_samples=1, cfg_guidance_weight=None)
+        user["simulation_config"]["skip_driver_during_force_gt"] = True
     return user, network, driver
 
 
@@ -127,9 +140,11 @@ def main():
         "positive": request.text_prompt.positive,
         "negative": request.text_prompt.negative,
     }
-    rectification = yaml.safe_load(
-        (root / "src/wizard/configs/driver/vavam_video_model.yaml").read_text()
-    )["driver"]["rectification"]
+    rectification = None
+    if spec["policy"] == "vavam":
+        rectification = yaml.safe_load(
+            (root / "src/wizard/configs/driver/vavam_video_model.yaml").read_text()
+        )["driver"]["rectification"]
     user, network, driver = build_configs(spec, scene_id, rectification, prompt)
     anchor_us = rig.first_camera_frame_end_us(["camera_front_wide_120fov"])
     end_us = anchor_us + (5 + 8 * spec["steps"]) * 33333
@@ -172,6 +187,14 @@ def main():
         user["simulation_config"]["force_gt_duration_us"] / 1e6,
         flush=True,
     )
+    print(
+        "Policy:",
+        spec["policy"],
+        "| Navigation:",
+        "recorded route" if spec["policy"] == "alpamayo1_5" else spec["command"],
+        flush=True,
+    )
+    print("Configured rollout span (s):", (end_us - anchor_us) / 1e6, flush=True)
 
 
 if __name__ == "__main__":
