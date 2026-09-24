@@ -62,7 +62,7 @@ def pose_inverse_points(points, pose):
 @dataclass
 class RolloutExport:
     camera: str
-    max_frames: int = 2000
+    max_frames: int = 4000
     counts: Counter = field(default_factory=Counter)
     frames: list[Frame] = field(default_factory=list)
     plans: list[Plan] = field(default_factory=list)
@@ -77,10 +77,8 @@ class RolloutExport:
     def add(self, entry):
         kind = entry.WhichOneof("log_entry")
         self.counts[kind] += 1
-        if sum(self.counts.values()) > 100_000:
-            raise ValueError(
-                "Export is limited to a short rollout (100000 log entries)"
-            )
+        if sum(self.counts.values()) > 400_000:
+            raise ValueError("Export is limited to 400000 log entries")
         if kind == "rollout_metadata":
             if self.metadata is not None:
                 raise ValueError("Expected exactly one rollout metadata entry")
@@ -124,8 +122,8 @@ class RolloutExport:
                         "Frame timestamps must be strictly increasing across chunks"
                     )
                 self.image_bytes += len(image.data)
-                if self.image_bytes > 256 * 1024 * 1024:
-                    raise ValueError("Compressed image export limit exceeded (256 MiB)")
+                if self.image_bytes > 1024 * 1024 * 1024:
+                    raise ValueError("Compressed image export limit exceeded (1 GiB)")
                 self.frames.append(Frame(timestamp, pose, image))
             self.pending_chunk = None
         elif kind == "driver_request":
@@ -527,11 +525,12 @@ async def main():
     )
     parser.add_argument("--overlay-min-forward-m", type=float, default=0.0)
     parser.add_argument("--require-closed-loop", action="store_true")
-    parser.add_argument("--max-frames", type=int, default=2000)
+    # 4000 frames covers a full 100 s recorded clip at 30 fps.
+    parser.add_argument("--max-frames", type=int, default=4000)
     parser.add_argument("--fps", type=int, default=10)
     args = parser.parse_args()
-    if not 1 <= args.max_frames <= 2000 or not 1 <= args.fps <= 30:
-        parser.error("--max-frames must be 1..2000; --fps must be 1..30")
+    if not 1 <= args.max_frames <= 4000 or not 1 <= args.fps <= 30:
+        parser.error("--max-frames must be 1..4000; --fps must be 1..30")
     if not np.isfinite(args.overlay_min_forward_m) or args.overlay_min_forward_m < 0:
         parser.error("--overlay-min-forward-m must be finite and nonnegative")
     from alpasim_utils.logs import async_read_pb_log
