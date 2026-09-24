@@ -127,6 +127,7 @@ def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch)
         policy_gpu=0,
         renderer_gpu=0,
         route_file=None,
+        renderer_seed=None,
     )
     monkeypatch.setattr(
         loop,
@@ -154,6 +155,51 @@ def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch)
     assert (tmp_path / "controller-output/session.csv").is_file()
     launch = json.loads((tmp_path / "launch.json").read_text())
     assert launch["command"] == "straight"
+
+
+@pytest.mark.parametrize("seed", [None, 7])
+def test_renderer_seed_is_fixed_only_when_requested(loop, tmp_path, monkeypatch, seed):
+    run = object.__new__(loop.Run)
+    run.work = run.root = run.project = tmp_path
+    run.args = SimpleNamespace(
+        scene=tmp_path / "scene.usdz",
+        checkpoint=tmp_path / "model.pt",
+        tokenizer=tmp_path / "tokenizer.jit",
+        seed_session=tmp_path / "session.pb",
+        steps=12,
+        command="straight",
+        approach_steps=0,
+        policy="vavam",
+        policy_gpu=0,
+        renderer_gpu=0,
+        renderer_seed=seed,
+        route_file=None,
+    )
+    monkeypatch.setattr(
+        loop,
+        "reserve_ports",
+        lambda: {
+            name: SimpleNamespace(
+                getsockname=lambda: ("127.0.0.1", 1234), close=lambda: None
+            )
+            for name in loop.SERVICES
+        },
+    )
+    run.finish = lambda *args: None
+
+    def launch(name, profile, arguments, **kwargs):
+        if name == "renderer":
+            if seed is None:
+                assert "--seed_for_every_rollout" not in arguments
+            else:
+                flag = arguments.index("--seed_for_every_rollout")
+                assert arguments[flag + 1] == str(seed)
+            raise RuntimeError("renderer launch checked")
+        return SimpleNamespace()
+
+    run.launch = launch
+    with pytest.raises(RuntimeError, match="renderer launch checked"):
+        run.simulate()
 
 
 def test_cleanup_only_stops_owned_process(loop):

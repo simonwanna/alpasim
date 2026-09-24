@@ -338,6 +338,14 @@ class Run:
                         "omnidreams",
                         "--resolution",
                         "704p",
+                        *(
+                            []
+                            if self.args.renderer_seed is None
+                            else [
+                                "--seed_for_every_rollout",
+                                str(self.args.renderer_seed),
+                            ]
+                        ),
                     ],
                     True,
                 ),
@@ -461,6 +469,11 @@ def main():
         help="Renderer/physics GPU ordinal within CUDA_VISIBLE_DEVICES",
     )
     parser.add_argument(
+        "--renderer-seed",
+        type=int,
+        help="Fixed video-model seed; default lets the renderer choose per session",
+    )
+    parser.add_argument(
         "--overlay-min-forward-m",
         type=float,
         default=0.0,
@@ -493,8 +506,11 @@ def main():
         args.command = args.command or "straight"
         if args.approach_steps is None:
             args.approach_steps = 0
-    if not 4 <= args.steps <= 180 or args.timeout <= 0:
-        parser.error("Use 4..180 simulation steps and a positive timeout")
+    # prepare_loop checks the upper bound against the recorded scene duration.
+    if args.steps < 4 or args.timeout <= 0:
+        parser.error("Use at least 4 simulation steps and a positive timeout")
+    if args.renderer_seed is not None and args.renderer_seed < 0:
+        parser.error("Renderer seed must be nonnegative")
     if args.export_timeout <= 0:
         parser.error("Export timeout must be positive")
     if not math.isfinite(args.overlay_min_forward_m) or args.overlay_min_forward_m < 0:
@@ -571,6 +587,8 @@ def main():
                     "requested_simulation": args.run,
                     "runtime_started": run.runtime_started,
                     "export_completed": run.export_completed,
+                    "scene": str(args.scene),
+                    "renderer_seed": args.renderer_seed,
                     "steps": args.steps,
                     "command": args.command,
                     "approach_steps": args.approach_steps,
