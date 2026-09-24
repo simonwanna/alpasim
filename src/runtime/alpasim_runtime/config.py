@@ -263,6 +263,7 @@ class RouteGeneratorType(Enum):
     MAP = 0
     RECORDED = 1
     NONE = 2
+    CUSTOM = 3
 
 
 class RenderBundling(Enum):
@@ -343,6 +344,9 @@ class SimulationConfig:
 
     route_generator_type: RouteGeneratorType = RouteGeneratorType.MAP
     route_start_offset_m: float = 0.0
+    # Explicit route in the scene's native local frame, in metres. Final point
+    # is the desired destination; it does not impose a stop on the policy.
+    route_waypoints_in_local: list[list[float]] | None = None
 
     # Whether to send optional messages to the driver
     send_recording_ground_truth: bool = False

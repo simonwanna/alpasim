@@ -52,6 +52,53 @@ def test_route_generator_none_skips_waypoint_validation():
     assert route_generator is None
 
 
+def test_custom_route_replaces_recorded_direction_and_does_not_extend():
+    recorded = np.array([[0, 0, 0], [100, 0, 0]], dtype=float)
+    selected = [[0, 0, 0], [0, 100, 0]]
+    route = RouteGenerator.create(
+        recorded,
+        None,
+        RouteGeneratorType.CUSTOM,
+        custom_waypoints_in_local=selected,
+    )
+    np.testing.assert_allclose(route.route_polyline_in_local.points, selected)
+    projected = route.generate_route(0, _make_pose(np.zeros(3)))
+    assert projected.waypoints[-1] == pytest.approx([0, 80, 0])
+    assert not route._extend_waypoints()
+    np.testing.assert_allclose(recorded, [[0, 0, 0], [100, 0, 0]])
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        None,
+        [],
+        [[0, 0]],
+        [[0, 0, 0]],
+        [[0, 0, 0], [0, 0, 0]],
+        [[0, 0, 0], [float("nan"), 1, 0]],
+    ],
+)
+def test_custom_route_rejects_invalid_points(points):
+    with pytest.raises(ValueError):
+        RouteGenerator.create(
+            np.zeros((2, 3)),
+            None,
+            RouteGeneratorType.CUSTOM,
+            custom_waypoints_in_local=points,
+        )
+
+
+def test_custom_route_cannot_be_silently_ignored():
+    with pytest.raises(ValueError, match="CUSTOM"):
+        RouteGenerator.create(
+            np.zeros((2, 3)),
+            None,
+            RouteGeneratorType.RECORDED,
+            custom_waypoints_in_local=[[0, 0, 0], [0, 10, 0]],
+        )
+
+
 def test_route_generator_invalid_route_start_offset(rig_waypoints_in_local):
     with pytest.raises(ValueError, match="route_start_offset_m"):
         RouteGeneratorRecorded(rig_waypoints_in_local, route_start_offset_m=-1.0)

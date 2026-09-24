@@ -262,6 +262,11 @@ class Run:
                 policy_gpu=self.args.policy_gpu,
                 renderer_gpu=self.args.renderer_gpu,
             )
+            if self.args.route_file is not None:
+                spec["route"] = json.loads(self.args.route_file.read_text())
+                (self.work / "route.json").write_text(
+                    json.dumps(spec["route"], indent=2) + "\n"
+                )
             spec_path = self.work / "launch.json"
             spec_path.write_text(json.dumps(spec, indent=2) + "\n")
             self.finish(
@@ -427,6 +432,11 @@ def main():
         help="GIF export limit in seconds, within the overall timeout",
     )
     parser.add_argument("--steps", type=int, default=12)
+    parser.add_argument(
+        "--route-file",
+        type=Path,
+        help="JSON route: scene_id, coordinate_frame=local, units=metres, XYZ waypoints",
+    )
     parser.add_argument("--policy", choices=("vavam", "alpamayo1_5"), default="vavam")
     parser.add_argument(
         "--policy-venv",
@@ -473,7 +483,7 @@ def main():
     if args.policy == "alpamayo1_5":
         if args.command is not None or args.tokenizer is not None:
             parser.error(
-                "Alpamayo uses a checkpoint directory and recorded-route navigation, not --command/--tokenizer"
+                "Alpamayo uses a checkpoint directory and route navigation, not --command/--tokenizer"
             )
         if args.approach_steps is None:
             args.approach_steps = 6
@@ -493,6 +503,16 @@ def main():
         parser.error("Approach must leave at least two policy-controlled intervals")
     if args.policy_gpu < 0 or args.renderer_gpu < 0:
         parser.error("GPU ordinals must be nonnegative")
+    if args.route_file is not None:
+        if args.policy != "alpamayo1_5":
+            parser.error("--route-file requires --policy alpamayo1_5")
+        from prepare_loop import validate_route_file
+
+        try:
+            project_path(args.route_file, args.project.resolve())
+            validate_route_file(json.loads(args.route_file.read_text()))
+        except (OSError, ValueError, TypeError) as error:
+            parser.error(str(error))
     if args.run:
         names = ["scene", "checkpoint", "seed_session"]
         if args.policy == "vavam":
@@ -555,9 +575,13 @@ def main():
                     "command": args.command,
                     "approach_steps": args.approach_steps,
                     "policy": args.policy,
-                    "navigation": "recorded_route"
-                    if args.policy == "alpamayo1_5"
-                    else "fixed_command",
+                    "navigation": (
+                        "custom_route"
+                        if args.route_file is not None
+                        else "recorded_route"
+                        if args.policy == "alpamayo1_5"
+                        else "fixed_command"
+                    ),
                     "policy_gpu": args.policy_gpu,
                     "renderer_gpu": args.renderer_gpu,
                 }

@@ -176,6 +176,7 @@ class EventBasedRollout:
             vector_map=self.unbound.vector_map,
             route_generator_type=self.unbound.route_generator_type,
             route_start_offset_m=self.unbound.route_start_offset_m,
+            custom_waypoints_in_local=self.unbound.route_waypoints_in_local,
         )
 
         self.broadcaster = MessageBroadcaster(handlers=[asl_log_writer])

@@ -5,8 +5,40 @@
 
 import argparse
 import json
+import math
 from pathlib import Path
 from zipfile import ZipFile
+
+
+def validate_route_file(route, scene_id=None):
+    """Require explicit units/frame and scene binding for a supplied route."""
+    if not isinstance(route, dict) or route.get("coordinate_frame") != "local":
+        raise ValueError(
+            "Route coordinate_frame must be local (native scene coordinates)"
+        )
+    if route.get("units") != "metres":
+        raise ValueError("Route units must be metres")
+    if not isinstance(route.get("scene_id"), str) or not route["scene_id"]:
+        raise ValueError("Route requires a scene_id")
+    if scene_id is not None and route["scene_id"] != scene_id:
+        raise ValueError("Route scene_id does not match the selected scene")
+    points = route.get("waypoints")
+    if not isinstance(points, list) or not 2 <= len(points) <= 10000:
+        raise ValueError("Route requires 2..10000 XYZ waypoints")
+    for point in points:
+        if (
+            not isinstance(point, list)
+            or len(point) != 3
+            or not all(
+                isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and math.isfinite(v)
+                for v in point
+            )
+        ):
+            raise ValueError("Route waypoints must be finite XYZ numbers")
+    if not any(math.dist(points[0], p) >= 0.2 for p in points[1:]):
+        raise ValueError("Route needs distinct waypoints")
 
 
 def build_configs(spec, scene_id, rectification, prompt):
@@ -111,6 +143,14 @@ def build_configs(spec, scene_id, rectification, prompt):
         # comes from route geometry via Alpamayo's route_to_nav_text adapter.
         driver["model"].update(num_trajectory_samples=1, cfg_guidance_weight=None)
         user["simulation_config"]["skip_driver_during_force_gt"] = True
+    if spec.get("route") is not None:
+        if policy != "alpamayo1_5":
+            raise ValueError("Explicit route requires the Alpamayo policy")
+        validate_route_file(spec["route"], scene_id)
+        user["simulation_config"].update(
+            route_generator_type="CUSTOM",
+            route_waypoints_in_local=spec["route"]["waypoints"],
+        )
     return user, network, driver
 
 
@@ -146,6 +186,17 @@ def main():
             (root / "src/wizard/configs/driver/vavam_video_model.yaml").read_text()
         )["driver"]["rectification"]
     user, network, driver = build_configs(spec, scene_id, rectification, prompt)
+    if spec.get("route") is not None:
+        from alpasim_runtime.config import RouteGeneratorType
+        from alpasim_runtime.route_generator import RouteGenerator
+
+        # Validate route geometry before the launcher starts any GPU services.
+        RouteGenerator.create(
+            rig.trajectory.positions,
+            vector_map=None,
+            route_generator_type=RouteGeneratorType.CUSTOM,
+            custom_waypoints_in_local=spec["route"]["waypoints"],
+        )
     anchor_us = rig.first_camera_frame_end_us(["camera_front_wide_120fov"])
     end_us = anchor_us + (5 + 8 * spec["steps"]) * 33333
     if end_us >= rig.trajectory.time_range_us.stop:

@@ -45,6 +45,7 @@ class RouteGenerator(ABC):
         vector_map: VectorMap,
         route_generator_type: RouteGeneratorType,
         route_start_offset_m: float = 0.0,
+        custom_waypoints_in_local: list[list[float]] | None = None,
     ) -> "RouteGenerator | None":
         """
         Factory method to create a RouteGenerator
@@ -53,9 +54,22 @@ class RouteGenerator(ABC):
           vector_map: the map data
           route_generator_type: the type of route generator to create
           route_start_offset_m: approximate distance ahead of the ego projection where routes start
+          custom_waypoints_in_local: explicit XYZ route used only by CUSTOM mode
         Returns:
           A route generator of the specified type, or None if route generation is disabled
         """
+        if route_generator_type == RouteGeneratorType.CUSTOM:
+            points = np.asarray(custom_waypoints_in_local, dtype=np.float64)
+            if points.ndim != 2 or points.shape[1] != 3 or len(points) < 2:
+                raise ValueError("Custom route requires at least two XYZ waypoints")
+            if not np.isfinite(points).all():
+                raise ValueError("Custom route waypoints must be finite")
+            route = RouteGeneratorRecorded(points, route_start_offset_m)
+            if len(route.route_polyline_in_local.points) < 2:
+                raise ValueError("Custom route needs two distinct waypoints")
+            return route
+        if custom_waypoints_in_local is not None:
+            raise ValueError("Custom waypoints require route_generator_type=CUSTOM")
         if route_generator_type == RouteGeneratorType.NONE:
             return None
         elif route_generator_type == RouteGeneratorType.RECORDED:

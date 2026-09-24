@@ -112,6 +112,7 @@ def test_initial_ego_context_uses_all_gt_samples_through_first_policy(
         vector_map=None,
         route_generator_type="RECORDED",
         route_start_offset_m=0.0,
+        route_waypoints_in_local=None,
         rollout_uuid="rollout",
         scene_id="scene",
         save_path_root=str(tmp_path),

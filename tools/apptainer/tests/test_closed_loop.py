@@ -15,6 +15,64 @@ import pytest
 TOOLS = Path(__file__).resolve().parents[1]
 
 
+def custom_route():
+    return dict(
+        scene_id="scene",
+        coordinate_frame="local",
+        units="metres",
+        waypoints=[[0, 0, 0], [20, 0, 0], [25, 5, 0], [25, 40, 0]],
+    )
+
+
+def test_explicit_route_reaches_runtime_configuration(monkeypatch):
+    monkeypatch.syspath_prepend(str(TOOLS))
+    import prepare_loop
+
+    spec = dict(
+        policy="alpamayo1_5",
+        work="/workspace/run",
+        scene="/workspace/scene.usdz",
+        steps=180,
+        approach_steps=6,
+        checkpoint="/workspace/checkpoint",
+        ports={name: 10000 for name in ("driver", "controller", "physics", "renderer")},
+        route=custom_route(),
+    )
+    user, _, driver = prepare_loop.build_configs(
+        spec, "scene", None, dict(positive="", negative="")
+    )
+    assert user["simulation_config"]["route_generator_type"] == "CUSTOM"
+    assert (
+        user["simulation_config"]["route_waypoints_in_local"]
+        == spec["route"]["waypoints"]
+    )
+    assert driver["model"]["model_type"] == "alpamayo1_5"
+    with pytest.raises(ValueError, match="scene_id"):
+        prepare_loop.build_configs(
+            spec, "different-scene", None, dict(positive="", negative="")
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(coordinate_frame="nre"),
+        dict(units="pixels"),
+        dict(scene_id=""),
+        dict(waypoints=[]),
+        dict(waypoints=[[0, 0, 0], [0, 0, 0]]),
+        dict(waypoints=[[0, 0, 0], [1, float("inf"), 0]]),
+        dict(waypoints=[[0, 0, 0], [1, True, 0]]),
+    ],
+)
+def test_explicit_route_rejects_ambiguous_coordinates(monkeypatch, change):
+    monkeypatch.syspath_prepend(str(TOOLS))
+    from prepare_loop import validate_route_file
+
+    with pytest.raises(ValueError):
+        validate_route_file(custom_route() | change)
+
+
 @pytest.fixture
 def loop(monkeypatch):
     monkeypatch.syspath_prepend(str(TOOLS))
@@ -68,6 +126,7 @@ def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch)
         policy="vavam",
         policy_gpu=0,
         renderer_gpu=0,
+        route_file=None,
     )
     monkeypatch.setattr(
         loop,

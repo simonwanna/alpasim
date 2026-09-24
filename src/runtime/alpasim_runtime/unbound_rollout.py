@@ -206,6 +206,7 @@ class UnboundRollout:
     vehicle_config: VehicleConfig
 
     vector_map: VectorMap | None = None
+    route_waypoints_in_local: list[list[float]] | None = None
     follow_log: str | None = None
 
     # Actors filtered out from simulation but still present in USDZ; we keep
@@ -368,6 +369,7 @@ class UnboundRollout:
             pose_reporting_interval_us=simulation_config.pose_reporting_interval_us,
             route_generator_type=simulation_config.route_generator_type,
             route_start_offset_m=simulation_config.route_start_offset_m,
+            route_waypoints_in_local=simulation_config.route_waypoints_in_local,
             send_recording_ground_truth=simulation_config.send_recording_ground_truth,
             vehicle_config=vehicle,
             vector_map=vector_map,
