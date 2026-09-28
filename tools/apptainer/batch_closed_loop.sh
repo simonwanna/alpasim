@@ -83,11 +83,10 @@ echo "Job: $SLURM_JOB_ID; array: $array_job; task: $task_id; name: $name; output
 echo "Scene: $scene; command: $command; steps: $steps; approach: $approach; seed: $seed; prompt: $prompt"
 
 if [[ $prompt != - ]]; then
-    prompt_script=$(cd "$(dirname "$manifest")" && pwd)/write_prompt_session.py
-    [[ -f $prompt_script ]] || { echo "Missing prompt helper: $prompt_script" >&2; exit 2; }
+    prompt_script=$(cd "$repo_root" && pwd)/tools/apptainer/write_prompt_session.py
     case "$prompt_script" in
         "$project"/*) ;;
-        *) echo "Prompt helper must be inside project storage" >&2; exit 2 ;;
+        *) echo "AlpaSim checkout must be inside project storage" >&2; exit 2 ;;
     esac
     case "$seed_session" in
         "$project"/*) ;;
