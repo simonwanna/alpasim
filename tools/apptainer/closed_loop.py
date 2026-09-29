@@ -262,6 +262,7 @@ class Run:
                 command=self.args.command,
                 approach_steps=self.args.approach_steps,
                 policy=self.args.policy,
+                navigation_instruction=self.args.navigation_instruction,
                 policy_gpu=self.args.policy_gpu,
                 renderer_gpu=self.args.renderer_gpu,
             )
@@ -444,6 +445,10 @@ def main():
     )
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument(
+        "--navigation-instruction",
+        help="Experimental Alpamayo2 navigation text repeated each prediction, without CFG",
+    )
+    parser.add_argument(
         "--route-file",
         type=Path,
         help="JSON route: scene_id, coordinate_frame=local, units=metres, XYZ waypoints",
@@ -493,11 +498,16 @@ def main():
     parser.add_argument(
         "--command",
         choices=("straight", "left", "right"),
-        help="VaVAM instruction; Alpamayo1.5 uses the route, Alpamayo2 has no navigation",
+        help="VaVAM instruction; Alpamayo1.5 uses routes, Alpamayo2 uses --navigation-instruction",
     )
     for name in ("scene", "checkpoint", "tokenizer", "seed-session"):
         parser.add_argument(f"--{name}", type=Path)
     args = parser.parse_args()
+    if args.navigation_instruction is not None:
+        if args.policy != "alpamayo2" or not args.navigation_instruction.strip():
+            parser.error(
+                "--navigation-instruction requires alpamayo2 and nonempty text"
+            )
     if args.policy in ("alpamayo1_5", "alpamayo2"):
         if args.command is not None or args.tokenizer is not None:
             parser.error(
@@ -598,8 +608,11 @@ def main():
                     "command": args.command,
                     "approach_steps": args.approach_steps,
                     "policy": args.policy,
+                    "navigation_instruction": args.navigation_instruction,
                     "navigation": (
-                        "custom_route"
+                        "instruction_without_cfg"
+                        if args.navigation_instruction is not None
+                        else "custom_route"
                         if args.route_file is not None
                         else "recorded_route"
                         if args.policy == "alpamayo1_5"

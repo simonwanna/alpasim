@@ -26,6 +26,7 @@ from alpamayo2_super.config import Alpamayo2SuperConfig
 from alpamayo2_super.models.alpamayo2_super import Alpamayo2Super
 
 from ..schema import ModelConfig
+from ..alpamayo2_inputs import prepare_navigation_inputs
 from .alpamayo_base import (
     CAMERA_NAME_TO_INDEX,
     _validate_camera_frame_at_or_before_t0,
@@ -93,6 +94,7 @@ class Alpamayo2Model(BaseTrajectoryModel):
             camera_ids=camera_ids,
             context_length=context_length or cls.DEFAULT_CONTEXT_LENGTH,
             force_determinism=model_cfg.force_determinism,
+            navigation_instruction=model_cfg.navigation_instruction,
             num_traj_samples=model_cfg.num_trajectory_samples,
             trajectory_candidate_microbatch_size=(
                 model_cfg.trajectory_candidate_microbatch_size
@@ -119,6 +121,7 @@ class Alpamayo2Model(BaseTrajectoryModel):
         ),
         max_num_distance_points: int = 64,
         skip_first_n_distance_points: int = 0,
+        navigation_instruction: str | None = None,
     ):
         """Initialize Alpamayo 2 Super model.
 
@@ -143,7 +146,14 @@ class Alpamayo2Model(BaseTrajectoryModel):
                 average.
             skip_first_n_distance_points: Leading waypoints excluded from the
                 selection distance average.
+            navigation_instruction: Optional fixed navigation prompt, without CFG.
         """
+        if navigation_instruction is not None and (
+            not isinstance(navigation_instruction, str)
+            or not navigation_instruction.strip()
+        ):
+            raise ValueError("Navigation instruction must be nonempty text")
+        self._navigation_instruction = navigation_instruction
         if context_length < 1:
             raise ValueError(
                 f"context_length must be at least 1, got {context_length}."
@@ -272,8 +282,8 @@ class Alpamayo2Model(BaseTrajectoryModel):
         """Alpamayo 2 Super reasons about navigation from context.
 
         The released inference path takes no discrete command; route intent, when
-        used, is supplied as free-form language. This wrapper runs the plain
-        (no-route) path, so the canonical command is unused.
+        used, is supplied as free-form language. This wrapper can use a configured
+        navigation instruction; the canonical discrete command is unused.
         """
         return None
 
@@ -363,9 +373,20 @@ class Alpamayo2Model(BaseTrajectoryModel):
             "ego_history_xyz": ego_history_xyz,
             "ego_history_rot": ego_history_rot,
         }
-        model_inputs = helper.prepare_model_inputs(
-            data, self._model.config, self._model.tokenizer
-        )
+        if self._navigation_instruction is None:
+            model_inputs = helper.prepare_model_inputs(
+                data, self._model.config, self._model.tokenizer
+            )
+        else:
+            logger.info(
+                "Alpamayo2 navigation instruction: %s", self._navigation_instruction
+            )
+            model_inputs = prepare_navigation_inputs(
+                data,
+                self._model.config,
+                self._model.tokenizer,
+                self._navigation_instruction,
+            )
         model_inputs = helper.to_device(model_inputs, self._device)
 
         pred_xyz, pred_rot, _logprob, extra = self._sample_trajectory_candidates(

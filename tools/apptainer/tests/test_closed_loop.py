@@ -128,6 +128,7 @@ def test_controller_can_write_session_log_at_launch(loop, tmp_path, monkeypatch)
         renderer_gpu=0,
         route_file=None,
         renderer_seed=None,
+        navigation_instruction=None,
     )
     monkeypatch.setattr(
         loop,
@@ -173,6 +174,7 @@ def test_renderer_seed_is_fixed_only_when_requested(loop, tmp_path, monkeypatch,
         policy_gpu=0,
         renderer_gpu=0,
         renderer_seed=seed,
+        navigation_instruction=None,
         route_file=None,
     )
     monkeypatch.setattr(
@@ -661,3 +663,77 @@ def test_alpamayo2_config_preserves_replay_inputs_and_requires_warmup(monkeypatc
         build_configs(dict(spec, approach_steps=0), "scene", None, {})
     with pytest.raises(ValueError, match="Explicit route"):
         build_configs(dict(spec, route=custom_route()), "scene", None, prompt)
+
+
+def test_navigation_text_reaches_driver_configuration(monkeypatch):
+    monkeypatch.syspath_prepend(str(TOOLS))
+    from prepare_loop import build_configs
+    from alpasim_driver.schema import DriverConfig
+    from omegaconf import OmegaConf
+
+    instruction = "Turn right at the upcoming intersection, then continue straight."
+    spec = dict(
+        policy="alpamayo2",
+        work="/workspace/run",
+        scene="/workspace/scene.usdz",
+        checkpoint="/workspace/checkpoint",
+        steps=180,
+        approach_steps=6,
+        navigation_instruction=instruction,
+        ports=dict(driver=10001, physics=10002, controller=10003, renderer=10004),
+    )
+    prompt = dict(positive="road", negative="")
+    _, _, driver = build_configs(spec, "scene", None, prompt)
+    parsed = OmegaConf.to_object(
+        OmegaConf.merge(OmegaConf.structured(DriverConfig), driver)
+    )
+    assert parsed.model.navigation_instruction == instruction
+    assert parsed.model.cfg_guidance_weight is None
+    for change in (dict(policy="alpamayo1_5"), dict(navigation_instruction=" ")):
+        with pytest.raises(ValueError, match="Navigation instruction"):
+            build_configs(spec | change, "scene", None, prompt)
+
+
+def test_navigation_text_is_saved_and_cli_rejects_wrong_policy(
+    loop, tmp_path, monkeypatch
+):
+    instruction = "Turn right, then continue straight."
+    out = tmp_path / "run"
+    captured = []
+
+    def make_run(args):
+        captured.append(args.navigation_instruction)
+        return SimpleNamespace(
+            work=out,
+            processes=[],
+            logs=[],
+            runtime_started=False,
+            export_completed=False,
+            check=lambda: None,
+        )
+
+    monkeypatch.setattr(loop, "Run", make_run)
+    args = [
+        "closed_loop",
+        "--project",
+        str(tmp_path),
+        "--image",
+        str(tmp_path / "image"),
+        "--cache-dir",
+        str(tmp_path / "cache"),
+        "--output-dir",
+        str(out),
+        "--navigation-instruction",
+        instruction,
+        "--policy",
+    ]
+    monkeypatch.setattr(sys, "argv", args + ["vavam"])
+    with pytest.raises(SystemExit):
+        loop.main()
+    assert not out.exists() and captured == []
+    monkeypatch.setattr(sys, "argv", args + ["alpamayo2"])
+    assert loop.main() == 0
+    status = json.loads((out / "status.json").read_text())
+    assert status["navigation"] == "instruction_without_cfg"
+    assert status["navigation_instruction"] == instruction
+    assert captured == [instruction]

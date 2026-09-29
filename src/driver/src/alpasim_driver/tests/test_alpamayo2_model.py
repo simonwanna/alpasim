@@ -74,6 +74,7 @@ def test_local_checkpoint_uses_sdpa_for_both_components(monkeypatch, tmp_path):
     def load_config(path, **kwargs):
         assert path == str(tmp_path) and kwargs == {"local_files_only": True}
         return config
+
     monkeypatch.setattr(
         module.Alpamayo2SuperConfig, "from_pretrained", load_config, raising=False
     )
@@ -192,6 +193,7 @@ def _candidates() -> np.ndarray:
 def _model(candidates: np.ndarray) -> Alpamayo2Model:
     model = object.__new__(Alpamayo2Model)
     model._model = _StubInferenceModel(candidates)
+    model._navigation_instruction = None
     model._device = torch.device("cpu")
     model._camera_ids = [CAMERA_ID]
     model._context_length = 1

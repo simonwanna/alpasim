@@ -1,4 +1,19 @@
-# Explicit routes
+# Navigation
+
+## Alpamayo 2 text instruction
+
+With `--policy alpamayo2`, use `--navigation-instruction "Turn right at the next intersection, then continue straight."`
+to include fixed navigation text in the policy input. The launcher saves the
+instruction in its configuration, and the driver logs it at each prediction.
+This experimental path uses a single conditioned prompt without classifier-free
+guidance (CFG); it retains the configured policy/renderer GPU placement.
+
+The same instruction is repeated throughout the run. It is not tied to a map
+intersection and is not cleared automatically after a turn. Check the driven
+path and the aftermath; input-wiring tests do not establish maneuver success.
+Alpamayo 2 does not currently accept `--route-file` or `--command`.
+
+## Alpamayo 1.5 explicit routes
 
 The closed-loop launcher accepts `--route-file` with `--policy alpamayo1_5`.
 The file must reside under `--project`. Its JSON schema is:

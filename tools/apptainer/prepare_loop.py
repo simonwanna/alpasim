@@ -55,6 +55,13 @@ def build_configs(spec, scene_id, rectification, prompt):
         raise ValueError(f"Unknown policy: {policy}")
     if policy in ("alpamayo1_5", "alpamayo2") and approach_steps < 6:
         raise ValueError("Alpamayo needs at least 6 approach steps for ego history")
+    instruction = spec.get("navigation_instruction")
+    if instruction is not None and (
+        policy != "alpamayo2"
+        or not isinstance(instruction, str)
+        or not instruction.strip()
+    ):
+        raise ValueError("Navigation instruction requires alpamayo2 and nonempty text")
     user = {
         "nr_workers": 1,
         "max_rollout_retries": 0,
@@ -140,9 +147,11 @@ def build_configs(spec, scene_id, rectification, prompt):
         driver["rectification"] = rectification
     else:
         # Four temporal frames and a recorded warmup provide Alpamayo history.
-        # Only the 1.5 adapter consumes route geometry; 2 runs without navigation.
+        # Only the 1.5 adapter consumes route geometry; 2 can use explicit text.
         driver["model"].update(num_trajectory_samples=1, cfg_guidance_weight=None)
         user["simulation_config"]["skip_driver_during_force_gt"] = True
+    if instruction is not None:
+        driver["model"]["navigation_instruction"] = instruction
     if spec.get("route") is not None:
         if policy != "alpamayo1_5":
             raise ValueError("Explicit route requires the Alpamayo policy")
@@ -242,7 +251,9 @@ def main():
         "Policy:",
         spec["policy"],
         "| Navigation:",
-        "recorded route"
+        spec["navigation_instruction"]
+        if spec.get("navigation_instruction") is not None
+        else "recorded route"
         if spec["policy"] == "alpamayo1_5"
         else "none"
         if spec["policy"] == "alpamayo2"

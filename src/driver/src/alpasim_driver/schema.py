@@ -47,6 +47,9 @@ class ModelConfig:
     # fields, which costs a second forward pass (~60 GB VRAM) and needs an
     # instruction to blend towards.
     cfg_guidance_weight: float | None = None
+    # Alpamayo 2 only: experimental fixed navigation text, without CFG. Repeated
+    # each prediction; it is not a scene-bound route or an enforced maneuver.
+    navigation_instruction: str | None = None
     force_determinism: bool = False  # Alpamayo models only
     num_trajectory_samples: int = 1  # Alpamayo models only
     # Where camera JPEGs are decoded.  ``cuda`` leaves the frames on the
