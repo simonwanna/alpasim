@@ -406,7 +406,7 @@ def test_alpamayo_config_has_history_and_route_navigation_without_vavam_inputs(
         prepare_loop.build_configs(dict(spec, approach_steps=0), "scene", None, {})
 
 
-@pytest.mark.parametrize("policy", ["vavam", "alpamayo1_5"])
+@pytest.mark.parametrize("policy", ["vavam", "alpamayo1_5", "alpamayo2"])
 def test_selected_backend_preflight_does_not_require_other_policy(
     tmp_path, monkeypatch, policy
 ):
@@ -438,7 +438,7 @@ def test_selected_backend_preflight_does_not_require_other_policy(
     monkeypatch.setitem(sys.modules, "alpamayo1_5", backend)
     monkeypatch.setitem(sys.modules, "transformers", transformers)
     assert service_entry.check_environment("policy", policy) == 0
-    expected = "vam" if policy == "vavam" else "alpamayo1_5"
+    expected = "vam" if policy == "vavam" else policy
     assert selected == [expected]
     assert f"alpasim_driver.models.{expected}_model" in calls
     other = "alpamayo1_5" if policy == "vavam" else "vam"
@@ -472,13 +472,14 @@ def test_missing_alpamayo_processor_cache_fails_preflight(tmp_path, monkeypatch)
     assert "processor not cached" in report["failures"]["processor_cache"]
 
 
-@pytest.mark.parametrize("policy_gpu,renderer_gpu", [(0, 0), (1, 0)])
+@pytest.mark.parametrize("policy", ["alpamayo1_5", "alpamayo2"])
+@pytest.mark.parametrize("policy_gpu,renderer_gpu", [(0, 0), (1, 0), (0, 1)])
 def test_services_use_selected_environment_and_allocated_gpu_ordinals(
-    loop, tmp_path, monkeypatch, policy_gpu, renderer_gpu
+    loop, tmp_path, monkeypatch, policy_gpu, renderer_gpu, policy
 ):
     run = object.__new__(loop.Run)
     run.args = SimpleNamespace(
-        policy="alpamayo1_5",
+        policy=policy,
         policy_gpu=policy_gpu,
         renderer_gpu=renderer_gpu,
         policy_hf_home=tmp_path / "assets",
@@ -576,8 +577,11 @@ def test_alpamayo_rejects_incompatible_arguments_before_launch(
     assert not (tmp_path / "out").exists()
 
 
+@pytest.mark.parametrize(
+    "policy,navigation", [("alpamayo1_5", "recorded_route"), ("alpamayo2", "none")]
+)
 def test_alpamayo_import_check_does_not_start_models_and_records_route_mode(
-    loop, tmp_path, monkeypatch
+    loop, tmp_path, monkeypatch, policy, navigation
 ):
     work = tmp_path / "out"
     captured = []
@@ -610,12 +614,50 @@ def test_alpamayo_import_check_does_not_start_models_and_records_route_mode(
             "--output-dir",
             str(work),
             "--policy",
-            "alpamayo1_5",
+            policy,
         ],
     )
     assert loop.main() == 0
     assert captured[0].approach_steps == 6
     status = json.loads((work / "status.json").read_text())
-    assert status["policy"] == "alpamayo1_5"
-    assert status["command"] is None and status["navigation"] == "recorded_route"
+    assert status["policy"] == policy
+    assert status["command"] is None and status["navigation"] == navigation
     assert not status["runtime_started"]
+
+
+def test_alpamayo2_config_preserves_replay_inputs_and_requires_warmup(monkeypatch):
+    monkeypatch.syspath_prepend(str(TOOLS))
+    from prepare_loop import build_configs
+    from alpasim_driver.schema import DriverConfig
+    from omegaconf import OmegaConf
+
+    spec = dict(
+        policy="alpamayo2",
+        work="/workspace/run",
+        scene="/workspace/scene.usdz",
+        checkpoint="/workspace/checkpoint",
+        steps=24,
+        approach_steps=6,
+        ports=dict(driver=10001, physics=10002, controller=10003, renderer=10004),
+    )
+    prompt = dict(positive="road", negative="")
+    user, _, driver = build_configs(spec, "scene", None, prompt)
+    parsed = OmegaConf.to_object(
+        OmegaConf.merge(OmegaConf.structured(DriverConfig), driver)
+    )
+    assert parsed.model.model_type == "alpamayo2"
+    assert parsed.model.device == "cuda:0"  # Ordinal inside the isolated service.
+    assert parsed.model.image_decode_device == "cpu"
+    assert parsed.model.num_trajectory_samples == 1
+    assert parsed.model.cfg_guidance_weight is None
+    assert parsed.inference.context_length == 4
+    assert parsed.inference.subsample_factor == 3
+    assert parsed.inference.use_cameras == ["camera_front_wide_120fov"]
+    assert parsed.rectification is None
+    assert "tokenizer_path" not in driver["model"]
+    assert user["simulation_config"]["skip_driver_during_force_gt"]
+    assert user["simulation_config"]["force_gt_duration_us"] >= 1_500_000
+    with pytest.raises(ValueError, match="ego history"):
+        build_configs(dict(spec, approach_steps=0), "scene", None, {})
+    with pytest.raises(ValueError, match="Explicit route"):
+        build_configs(dict(spec, route=custom_route()), "scene", None, prompt)

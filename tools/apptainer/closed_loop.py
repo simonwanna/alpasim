@@ -85,8 +85,11 @@ class Run:
         self.policy_venv = project_path(
             args.policy_venv
             or self.project
-            / "apps/alpasim"
-            / (".venv-vavam" if args.policy == "vavam" else ".venv-alpamayo1_5"),
+            / {
+                "vavam": "apps/alpasim/.venv-vavam",
+                "alpamayo1_5": "apps/alpasim/.venv-alpamayo1_5",
+                "alpamayo2": "apps/alpamayo2-super/.venv",
+            }[args.policy],
             self.project,
         )
         if args.policy_hf_home is not None:
@@ -445,11 +448,13 @@ def main():
         type=Path,
         help="JSON route: scene_id, coordinate_frame=local, units=metres, XYZ waypoints",
     )
-    parser.add_argument("--policy", choices=("vavam", "alpamayo1_5"), default="vavam")
+    parser.add_argument(
+        "--policy", choices=("vavam", "alpamayo1_5", "alpamayo2"), default="vavam"
+    )
     parser.add_argument(
         "--policy-venv",
         type=Path,
-        help="Existing policy environment; default apps/alpasim/.venv-<policy>",
+        help="Existing policy environment; defaults to the selected shared installation",
     )
     parser.add_argument(
         "--policy-hf-home",
@@ -488,15 +493,15 @@ def main():
     parser.add_argument(
         "--command",
         choices=("straight", "left", "right"),
-        help="VaVAM instruction (default straight); Alpamayo uses the recorded route",
+        help="VaVAM instruction; Alpamayo1.5 uses the route, Alpamayo2 has no navigation",
     )
     for name in ("scene", "checkpoint", "tokenizer", "seed-session"):
         parser.add_argument(f"--{name}", type=Path)
     args = parser.parse_args()
-    if args.policy == "alpamayo1_5":
+    if args.policy in ("alpamayo1_5", "alpamayo2"):
         if args.command is not None or args.tokenizer is not None:
             parser.error(
-                "Alpamayo uses a checkpoint directory and route navigation, not --command/--tokenizer"
+                "Alpamayo uses a checkpoint directory; --command/--tokenizer are unsupported"
             )
         if args.approach_steps is None:
             args.approach_steps = 6
@@ -535,7 +540,7 @@ def main():
             names.append("tokenizer")
         for name in names:
             path = getattr(args, name)
-            if name == "checkpoint" and args.policy == "alpamayo1_5":
+            if name == "checkpoint" and args.policy in ("alpamayo1_5", "alpamayo2"):
                 if path is None:
                     parser.error(
                         "Alpamayo --run requires a local --checkpoint directory"
@@ -598,6 +603,8 @@ def main():
                         if args.route_file is not None
                         else "recorded_route"
                         if args.policy == "alpamayo1_5"
+                        else "none"
+                        if args.policy == "alpamayo2"
                         else "fixed_command"
                     ),
                     "policy_gpu": args.policy_gpu,

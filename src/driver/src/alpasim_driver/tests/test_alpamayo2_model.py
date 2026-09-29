@@ -19,6 +19,8 @@ except ModuleNotFoundError:
     helper = ModuleType("alpamayo2_super.helper")
     helper.prepare_model_inputs = lambda data, _config, _tokenizer: data
     helper.to_device = lambda data, _device: data
+    config_module = ModuleType("alpamayo2_super.config")
+    config_module.Alpamayo2SuperConfig = type("Alpamayo2SuperConfig", (), {})
     models = ModuleType("alpamayo2_super.models")
     model_module = ModuleType("alpamayo2_super.models.alpamayo2_super")
 
@@ -33,6 +35,7 @@ except ModuleNotFoundError:
         {
             "alpamayo2_super": alpamayo2_super,
             "alpamayo2_super.helper": helper,
+            "alpamayo2_super.config": config_module,
             "alpamayo2_super.models": models,
             "alpamayo2_super.models.alpamayo2_super": model_module,
         }
@@ -55,6 +58,47 @@ from alpasim_utils.geometry import Pose as GeometryPose
 CAMERA_ID = "camera_front_wide_120fov"
 LATEST_TIMESTAMP_US = 2_000_000
 NUM_WAYPOINTS = 20
+
+
+def test_local_checkpoint_uses_sdpa_for_both_components(monkeypatch, tmp_path):
+    import alpasim_driver.models.alpamayo2_model as module
+
+    config = SimpleNamespace(
+        vlm_config=SimpleNamespace(_attn_implementation="flash_attention_2"),
+        expert_config=SimpleNamespace(
+            llm_config=SimpleNamespace(_attn_implementation="flash_attention_2")
+        ),
+    )
+    calls = []
+
+    def load_config(path, **kwargs):
+        assert path == str(tmp_path) and kwargs == {"local_files_only": True}
+        return config
+    monkeypatch.setattr(
+        module.Alpamayo2SuperConfig, "from_pretrained", load_config, raising=False
+    )
+    fake = SimpleNamespace(
+        expert=SimpleNamespace(
+            action_space=SimpleNamespace(dt=0.1, get_action_space_dims=lambda: (64, 3))
+        ),
+        eval=lambda: None,
+    )
+
+    def load_model(path, **kwargs):
+        calls.append((path, kwargs))
+        return fake
+
+    monkeypatch.setattr(
+        module.Alpamayo2Super, "from_pretrained", load_model, raising=False
+    )
+    Alpamayo2Model(str(tmp_path), torch.device("cuda:0"), [CAMERA_ID])
+    assert calls[0][1]["local_files_only"] is True
+    assert calls[0][1]["device_map"] == "cuda:0"
+    assert calls[0][1]["dtype"] == torch.bfloat16
+    assert calls[0][1]["attn_implementation"] == "sdpa"
+    assert calls[0][1]["config"] is config
+    assert config.vlm_config._attn_implementation == "sdpa"
+    assert config.expert_config.llm_config._attn_implementation == "sdpa"
 
 
 class _StubInferenceModel:

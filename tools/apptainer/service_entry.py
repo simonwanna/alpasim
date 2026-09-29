@@ -38,9 +38,7 @@ def check_environment(profile, policy="vavam"):
         ],
         "policy": [
             "alpasim_driver.main",
-            "alpasim_driver.models.vam_model"
-            if policy == "vavam"
-            else "alpasim_driver.models.alpamayo1_5_model",
+            f"alpasim_driver.models.{'vam' if policy == 'vavam' else policy}_model",
             "alpasim_utils.logs",
         ],
     }[profile]
@@ -72,6 +70,8 @@ def check_environment(profile, policy="vavam"):
     }[profile]
     if profile == "policy" and policy == "alpamayo1_5":
         distributions += ["alpamayo1_5", "transformers", "torchvision", "accelerate"]
+    if profile == "policy" and policy == "alpamayo2":
+        distributions += ["alpamayo2_super", "transformers", "torchvision", "accelerate"]
     inventory = {}
     for name in distributions:
         try:
@@ -147,7 +147,9 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", choices=("core", "policy"))
     group.add_argument("--module")
-    parser.add_argument("--policy", choices=("vavam", "alpamayo1_5"), default="vavam")
+    parser.add_argument(
+        "--policy", choices=("vavam", "alpamayo1_5", "alpamayo2"), default="vavam"
+    )
     args, module_args = parser.parse_known_args()
     sys.path[:0] = [str(ROOT / name) for name in SOURCE_DIRS]
     if args.check:

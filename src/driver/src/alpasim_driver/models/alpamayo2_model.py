@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 import torch
 from alpamayo2_super import helper
+from alpamayo2_super.config import Alpamayo2SuperConfig
 from alpamayo2_super.models.alpamayo2_super import Alpamayo2Super
 
 from ..schema import ModelConfig
@@ -199,10 +200,15 @@ class Alpamayo2Model(BaseTrajectoryModel):
         load_kwargs: dict = {}
         if os.path.isdir(os.path.expanduser(checkpoint_path)):
             load_kwargs["local_files_only"] = True
+        config = Alpamayo2SuperConfig.from_pretrained(checkpoint_path, **load_kwargs)
+        config.vlm_config._attn_implementation = "sdpa"
+        config.expert_config.llm_config._attn_implementation = "sdpa"
         self._model = Alpamayo2Super.from_pretrained(
             checkpoint_path,
+            config=config,
             dtype=self.DTYPE,
             device_map=str(device),
+            attn_implementation="sdpa",
             **load_kwargs,
         )
         self._model.eval()
