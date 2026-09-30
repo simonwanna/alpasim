@@ -62,6 +62,8 @@ def test_submission_groups_all_outputs_and_reserves_two_gpus(tmp_path, scheduler
     args = json.loads(Path(scheduler["CAPTURE"]).read_text())
     assert "--gpus=2" in args and "--ntasks=1" in args
     assert "--gpus-per-task=2" in args
+    assert "--mem=192G" in args
+    assert "--mem=0" not in args
     assert not any(a.startswith("--nodes") for a in args)
     assert not any(a.startswith("--array") for a in args)
     run = next(root.glob("*/*"))
@@ -71,6 +73,7 @@ def test_submission_groups_all_outputs_and_reserves_two_gpus(tmp_path, scheduler
     assert args[-1] == "Turn right; keep going"
     assert (run / "job-id.txt").read_text().strip() == "12345"
     assert (run / "code-revision.txt").is_file()
+    assert "host_memory=192G" in (run / "resources.txt").read_text()
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
@@ -95,6 +98,7 @@ def test_worker_records_timing_and_preserves_exit_status(
     assert result.returncode == exit_code, result.stderr
     args = json.loads(Path(scheduler["CAPTURE"]).read_text())
     assert "--gpus=2" in args
+    assert "--mem=0" in args
     assert args[args.index("--policy") + 1] == "alpamayo2"
     assert args[args.index("--policy-gpu") + 1] == "0"
     assert args[args.index("--renderer-gpu") + 1] == "1"
@@ -142,3 +146,30 @@ def test_rejects_fixed_job_overrides_before_submission(tmp_path, scheduler, opti
     )
     assert result.returncode == 2
     assert not output.exists() and not Path(scheduler["CAPTURE"]).exists()
+
+
+@pytest.mark.parametrize("memory", ["0", "0G", "-1G", "all", "1G --nodes=2"])
+def test_invalid_memory_fails_before_submission(tmp_path, scheduler, memory):
+    output = tmp_path / "outputs"
+    result = subprocess.run(
+        ["bash", str(SCRIPT), str(output), "--project", str(tmp_path)],
+        env=dict(scheduler, JOB_MEMORY=memory),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert not output.exists() and not Path(scheduler["CAPTURE"]).exists()
+
+
+def test_memory_override_reaches_scheduler_and_saved_resources(tmp_path, scheduler):
+    root = tmp_path / "outputs"
+    result = subprocess.run(
+        ["bash", str(SCRIPT), str(root), "--project", str(tmp_path)],
+        env=dict(scheduler, JOB_MEMORY="160G"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    args = json.loads(Path(scheduler["CAPTURE"]).read_text())
+    assert "--mem=160G" in args and "--mem=192G" not in args
+    assert "host_memory=160G" in next(root.glob("*/*/resources.txt")).read_text()

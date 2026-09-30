@@ -5,6 +5,7 @@
 # Submit one two-GPU job using existing environments and scene/model assets.
 # Usage: bash submit_alpamayo2.sh OUTPUT_ROOT [closed_loop.py arguments]
 # Set SBATCH_ACCOUNT if required; RUN_TIMEZONE controls date/time folder names.
+# JOB_MEMORY sets the host-RAM budget (default 192G), separately from GPU VRAM.
 # The default 24-step run has a 25-minute launcher limit and 30-minute allocation.
 set -euo pipefail
 umask 007
@@ -26,6 +27,10 @@ if [[ ${1:-} != --worker ]]; then
         esac
     done
     repo_root=$(cd "$(dirname "$0")/../.." && pwd)
+    job_memory=${JOB_MEMORY:-192G}
+    [[ $job_memory =~ ^[1-9][0-9]*[MG]$ ]] || {
+        echo "JOB_MEMORY must be a positive integer followed by M or G" >&2; exit 2;
+    }
     stamp=$(TZ="${RUN_TIMEZONE:-UTC}" date +%F/%H-%M-%S%z)
     out="$output_root/$stamp"
     mkdir -p "$(dirname "$out")"
@@ -34,9 +39,12 @@ if [[ ${1:-} != --worker ]]; then
     printf '\n' >> "$out/submission.txt"
     git -C "$repo_root" rev-parse HEAD > "$out/code-revision.txt"
     echo "Outputs: $out"
+    printf 'host_memory=%s\ngpus=2\ncpus_per_task=8\n' "$job_memory" > "$out/resources.txt"
+    echo "Resources: 2 GPUs, 8 CPU cores, $job_memory host RAM"
     # Absolute log paths exist before submission, so Slurm creates no repo logs.
     if job=$(sbatch --parsable --job-name=alpamayo2-loop --partition=gpu \
         --ntasks=1 --gpus=2 --gpus-per-task=2 --cpus-per-task=8 --time=00:30:00 \
+        --mem="$job_memory" \
         --chdir="$repo_root" --output="$out/slurm.log" --error="$out/slurm.log" \
         "$repo_root/tools/apptainer/submit_alpamayo2.sh" --worker "$repo_root" "$out" "$@"); then
         printf '%s\n' "$job" > "$out/job-id.txt"
@@ -82,7 +90,8 @@ stop_job() {
 trap finish EXIT
 trap 'stop_job 143' TERM
 trap 'stop_job 130' INT
-srun --ntasks=1 --gpus=2 python3 -u "$repo_root/tools/apptainer/closed_loop.py" \
+# Zero here uses the job's memory allocation, not an unrestricted node request.
+srun --ntasks=1 --gpus=2 --mem=0 python3 -u "$repo_root/tools/apptainer/closed_loop.py" \
     --steps 24 --approach-steps 6 --renderer-seed 42 \
     --timeout 1500 --export-timeout 600 \
     "$@" --output-dir "$out/run" \
